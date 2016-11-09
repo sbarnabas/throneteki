@@ -76,7 +76,7 @@ class DeckSummary extends React.Component {
             <div>
                 { this.state.cardToShow ? <img className='hover-image' src={ '/img/cards/' + this.state.cardToShow.code + '.png' } /> : null }
                 <h3>{ this.props.name }</h3>
-                <div className='decklist'>
+                <div className='deck-list'>
                     <img className='pull-left' src={ '/img/factions/' + this.props.faction.value + '.png' } />
                     { this.props.agenda && this.props.agenda.code ? <img className='pull-right' src={ '/img/cards/' + this.props.agenda.code + '.png' } /> : null }
                     <div>

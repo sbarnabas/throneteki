@@ -141,7 +141,7 @@ class InnerDecks extends React.Component {
                 {errorBar}
                 <div className='col-sm-6'>
                     <Link className='btn btn-primary' href='/decks/add'>Add new deck</Link>
-                    <div className='deck-list'>{this.state.decks.length === 0 ? 'You have no decks, try adding one.' : deckList}</div>
+                    <div className='popup-deck-list'>{this.state.decks.length === 0 ? 'You have no decks, try adding one.' : deckList}</div>
                 </div>
                 {deckInfo}
             </div>);

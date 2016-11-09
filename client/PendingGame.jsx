@@ -134,7 +134,7 @@ class InnerPendingGame extends React.Component {
                             <h4 className='modal-title'>Select Deck</h4>
                         </div>
                         <div className='modal-body'>
-                            <div className='deck-list'>
+                            <div className='popup-deck-list'>
                                 {decks}
                             </div>
                         </div>

@@ -1,0 +1,66 @@
+// This file should contain base styling that either applies to the whole site or is generic across the site
+
+@brand-primary: green;
+
+@card-width: 64px;
+@card-height: 84px;
+
+@font-face {
+  font-family: thronesdb;
+  src: url('/fonts/thronesdb.ttf');
+}
+
+*, *:before, *:after { 
+  box-sizing: border-box; 
+}
+
+body {
+  padding-top: 75px;
+  background-color: #1E1E1E;
+  color: #C1C2C3
+}
+
+.navbar-right {
+  margin-right: 0px;
+}
+
+.navbar-nav > li > span {
+    padding-top: 10px;
+    padding-bottom: 10px;
+    line-height: 20px;
+    position: relative;
+    display: block;
+    padding: 10px 15px;
+}
+
+@media (min-width: 768px) {
+  .navbar-nav > li > span {
+    padding-top: 15px;
+    padding-bottom: 15px;
+  }
+}
+
+.bootstrap-typeahead-input-main {
+  background: white !important;
+}
+
+h4 {
+  font-size: 14px;
+}
+
+.relative {
+  position: relative;
+}
+
+.select-cursor {
+  cursor: url(/img/crosshairs.cur), default;
+}
+
+.button-row {
+  margin-top: 10px;
+  margin-right: 10px;
+
+  >button {
+    margin-right: 10px;
+  }
+}

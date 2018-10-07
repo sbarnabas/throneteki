@@ -1,6 +1,3 @@
-/* global describe, it, beforeEach, expect, spyOn, jasmine */
-/* eslint camelcase: 0, no-invalid-this: 0 */
-
 const _ = require('underscore');
 
 const Player = require('../../../server/game/player.js');
@@ -14,16 +11,15 @@ function addCardsToHand(hand, number) {
 describe('Player', function() {
     describe('setupDone', function() {
         beforeEach(function() {
-            this.player = new Player('1', 'Player 1', true);
+            this.game = jasmine.createSpyObj('game', ['raiseEvent']);
+            this.player = new Player('1', { username: 'Player 1', settings: {}}, true, this.game);
+            this.player.deck = {};
             this.player.initialise();
-            
+
             this.cardSpy = jasmine.createSpyObj('card', ['isUnique', 'addDuplicate']);
             this.duplicateSpy = jasmine.createSpyObj('card', ['isUnique', 'addDuplicate']);
-            this.findSpy = spyOn(this.player, 'findCardByName');
 
             spyOn(this.player, 'drawCardsToHand');
-
-            this.findSpy.and.returnValue(undefined);
 
             this.cardSpy.facedown = true;
             this.cardSpy.name = 'Card';
@@ -32,6 +28,7 @@ describe('Player', function() {
 
             this.player.cardsInPlay.push(this.cardSpy);
             this.player.cardsInPlay.push(this.duplicateSpy);
+            this.player.gold = 8;
 
             this.player.setupDone();
         });
@@ -78,8 +75,11 @@ describe('Player', function() {
 
         describe('when cards are not unique', function() {
             it('should not attempt to add duplicates', function() {
-                expect(this.findSpy).not.toHaveBeenCalled();
                 expect(this.cardSpy.addDuplicate).not.toHaveBeenCalled();
+            });
+
+            it('should mark the card as face up', function() {
+                expect(this.cardSpy.facedown).toBe(false);
             });
         });
 
@@ -93,15 +93,14 @@ describe('Player', function() {
 
             describe('and a duplicate is found', function() {
                 beforeEach(function() {
-                    this.findSpy.and.callFake((list, name) => {
-                        if(name === 'Dupe') {
-                            return this.cardSpy;
-                        }
-
-                        return undefined;
-                    });
+                    this.player.cardsInPlay.push(this.duplicateSpy);
+                    this.duplicateSpy.name = this.cardSpy.name;
 
                     this.player.setupDone();
+                });
+
+                it('should mark the card as face up', function() {
+                    expect(this.duplicateSpy.facedown).toBe(false);
                 });
 
                 it('should add a duplicate', function() {
@@ -115,8 +114,6 @@ describe('Player', function() {
 
             describe('and no duplicate is found', function() {
                 beforeEach(function() {
-                    this.findSpy.and.returnValue(undefined);
-                    
                     this.player.setupDone();
                 });
 
@@ -125,7 +122,7 @@ describe('Player', function() {
                 });
 
                 it('should not remove any cards from in play', function() {
-                    expect(this.player.cardsInPlay.size()).toBe(2);
+                    expect(this.player.cardsInPlay.length).toBe(2);
                 });
             });
         });
@@ -134,6 +131,10 @@ describe('Player', function() {
             expect(_.any(this.player.cardsInPlay, card => {
                 return card.facedown;
             })).toBe(false);
+        });
+
+        it('should return unspent setup gold', function() {
+            expect(this.player.gold).toBe(0);
         });
     });
 });

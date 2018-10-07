@@ -1,161 +1,132 @@
-/* global describe, it, beforeEach, expect, spyOn, jasmine */
-/* eslint camelcase: 0, no-invalid-this: 0 */
-
 const Player = require('../../../server/game/player.js');
+
+const PlayActionPrompt = require('../../../server/game/gamesteps/playactionprompt.js');
 
 describe('Player', function() {
     beforeEach(function() {
-        this.player = new Player('1', 'Player 1', true);
+        this.gameSpy = jasmine.createSpyObj('game', ['addMessage', 'resolveAbility', 'queueStep', 'raiseEvent']);
+        this.player = new Player('1', {username: 'Player 1', settings: {}}, true, this.gameSpy);
         this.player.initialise();
     });
 
     describe('playCard', function() {
         beforeEach(function() {
-            this.findSpy = spyOn(this.player, 'findCardByUuid');
-            this.canPlaySpy = spyOn(this.player, 'canPlayCard');
-            this.cardSpy = jasmine.createSpyObj('card', ['getType', 'getCost', 'isUnique', 'isLimited']);
-            this.dupeCardSpy = jasmine.createSpyObj('dupecard', ['addDuplicate']);
-            spyOn(this.player, 'removeFromHand');
+            this.playActionSpy = jasmine.createSpyObj('playAction', ['meetsRequirements', 'canPayCosts', 'canResolveTargets']);
+            this.cardSpy = jasmine.createSpyObj('card', ['getPlayActions']);
 
-            this.findSpy.and.returnValue(this.cardSpy);
-            this.canPlaySpy.and.returnValue(true);
+            this.player.hand.push(this.cardSpy);
+            this.cardSpy.location = 'hand';
+            this.cardSpy.controller = this.player;
         });
 
-        describe('when card is not in hand to play', function() {
+        describe('when card is undefined', function() {
             beforeEach(function() {
-                this.findSpy.and.returnValue(undefined);
-                this.canPlay = this.player.playCard('not found');
+                this.player.hand.pop();
+                this.canPlay = this.player.playCard(undefined);
             });
 
             it('should return false', function() {
                 expect(this.canPlay, false).toBe(false);
             });
 
-            it('should not change the hand', function() {
-                expect(this.player.removeFromHand).not.toHaveBeenCalled();
+            it('should not put the card in play', function() {
+                expect(this.player.cardsInPlay).not.toContain(this.cardSpy);
             });
         });
 
-        describe('when card cannot be played', function() {
+        describe('when card has play actions', function() {
             beforeEach(function() {
-                this.canPlaySpy.and.returnValue(false);
+                this.cardSpy.getPlayActions.and.returnValue([this.playActionSpy]);
             });
 
-            describe('and not forcing play', function() {
+            describe('when the requirements are met and the costs can be paid', function() {
                 beforeEach(function() {
-                    this.canPlay = this.player.playCard('', false);
+                    this.playActionSpy.meetsRequirements.and.returnValue(true);
+                    this.playActionSpy.canPayCosts.and.returnValue(true);
+                    this.playActionSpy.canResolveTargets.and.returnValue(true);
+                });
+
+                it('should resolve the play action', function() {
+                    this.player.playCard(this.cardSpy);
+                    expect(this.gameSpy.resolveAbility).toHaveBeenCalledWith(this.playActionSpy, jasmine.objectContaining({ game: this.gameSpy, player: this.player, source: this.cardSpy }));
+                });
+
+                it('should return true', function() {
+                    expect(this.player.playCard(this.cardSpy)).toBe(true);
+                });
+            });
+
+            describe('when the requirements are met but the costs cannot be paid', function() {
+                beforeEach(function() {
+                    this.playActionSpy.meetsRequirements.and.returnValue(true);
+                    this.playActionSpy.canPayCosts.and.returnValue(false);
+                    this.playActionSpy.canResolveTargets.and.returnValue(true);
+                });
+
+                it('should not resolve the play action', function() {
+                    this.player.playCard(this.cardSpy);
+                    expect(this.gameSpy.resolveAbility).not.toHaveBeenCalled();
                 });
 
                 it('should return false', function() {
-                    expect(this.canPlay).toBe(false);
-                });
-
-                it('should not change the hand', function() {
-                    expect(this.player.removeFromHand).not.toHaveBeenCalled();
+                    expect(this.player.playCard(this.cardSpy)).toBe(false);
                 });
             });
 
-            describe('and forcing play', function() {
+            describe('when the costs can be paid but the requirements are not met', function() {
                 beforeEach(function() {
-                    this.canPlay = this.player.playCard('', true);
+                    this.playActionSpy.meetsRequirements.and.returnValue(false);
+                    this.playActionSpy.canPayCosts.and.returnValue(true);
+                    this.playActionSpy.canResolveTargets.and.returnValue(true);
                 });
 
-                it('should return true', function() {
-                    expect(this.canPlay).toBe(true);
+                it('should not resolve the play action', function() {
+                    this.player.playCard(this.cardSpy);
+                    expect(this.gameSpy.resolveAbility).not.toHaveBeenCalled();
                 });
 
-                it('should remove the card from hand', function() {
-                    expect(this.player.removeFromHand).toHaveBeenCalled();
+                it('should return false', function() {
+                    expect(this.player.playCard(this.cardSpy)).toBe(false);
+                });
+            });
+
+            describe('when targets cannot be resolved', function() {
+                beforeEach(function() {
+                    this.playActionSpy.meetsRequirements.and.returnValue(true);
+                    this.playActionSpy.canPayCosts.and.returnValue(true);
+                    this.playActionSpy.canResolveTargets.and.returnValue(false);
+                });
+
+                it('should not resolve the play action', function() {
+                    this.player.playCard(this.cardSpy);
+                    expect(this.gameSpy.resolveAbility).not.toHaveBeenCalled();
+                });
+
+                it('should return false', function() {
+                    expect(this.player.playCard(this.cardSpy)).toBe(false);
                 });
             });
         });
 
-        describe('when card is an attachment', function() {
+        describe('when card has multiple matching play actions', function() {
             beforeEach(function() {
-                spyOn(this.player, 'promptForAttachment');
+                this.playActionSpy.meetsRequirements.and.returnValue(true);
+                this.playActionSpy.canPayCosts.and.returnValue(true);
+                this.playActionSpy.canResolveTargets.and.returnValue(true);
+                this.playActionSpy2 = jasmine.createSpyObj('playAction', ['meetsRequirements', 'canPayCosts', 'canResolveTargets']);
+                this.playActionSpy2.meetsRequirements.and.returnValue(true);
+                this.playActionSpy2.canPayCosts.and.returnValue(true);
+                this.playActionSpy2.canResolveTargets.and.returnValue(true);
+                this.cardSpy.getPlayActions.and.returnValue([this.playActionSpy, this.playActionSpy2]);
+            });
 
-                this.cardSpy.getType.and.returnValue('attachment');
-                this.canPlay = this.player.playCard('');
+            it('should prompt the player to choose a play action', function() {
+                this.player.playCard(this.cardSpy);
+                expect(this.gameSpy.queueStep).toHaveBeenCalledWith(jasmine.any(PlayActionPrompt));
             });
 
             it('should return true', function() {
-                expect(this.canPlay).toBe(true);
-            });
-
-            it('should prompt for attachment target', function() {
-                expect(this.player.promptForAttachment).toHaveBeenCalled();
-            });
-
-            it('should not remove the card from hand', function() {
-                expect(this.player.removeFromHand).not.toHaveBeenCalled();
-            });
-        });
-
-        describe('when card is a duplicate of a card in play', function() {
-            beforeEach(function() {
-                spyOn(this.player, 'getDuplicateInPlay').and.returnValue(this.dupeCardSpy);
-            });
-
-            describe('and this is the setup phase', function() {
-                beforeEach(function() {
-                    this.player.phase = 'setup';
-                    
-                    this.canPlay = this.player.playCard('');
-                });
-
-                it('should return true', function() {
-                    expect(this.canPlay).toBe(true);
-                });
-
-                it('should not try to add a duplicate to the card in play', function() {
-                    expect(this.dupeCardSpy.addDuplicate).not.toHaveBeenCalled();
-                });
-
-                it('should add a new card in play facedown', function() {
-                    expect(this.player.cardsInPlay).toContain(this.cardSpy);
-                    expect(this.cardSpy.facedown).toBe(true);
-                    expect(this.cardSpy.inPlay).toBe(true);
-                });
-            });
-
-            describe('and this is not the setup phase', function() {
-                beforeEach(function() {
-                    this.canPlay = this.player.playCard('');
-                });
-
-                it('should return true', function() {
-                    expect(this.canPlay).toBe(true);
-                });
-
-                it('should add a duplicate to the existing card in play', function() {
-                    expect(this.dupeCardSpy.addDuplicate).toHaveBeenCalled();
-                });
-
-                it('should not add a new card to play', function() {
-                    expect(this.player.cardsInPlay).not.toContain(this.cardSpy);
-                });
-            });
-        });
-
-        describe('when card is limited and not forcing play', function() {
-            beforeEach(function() {
-                this.cardSpy.isLimited.and.returnValue(true);
-                this.canPlay = this.player.playCard(this.cardSpy);
-            });
-
-            it('should set the limited played flag', function() {
-                expect(this.player.limitedPlayed).toBe(1);
-            });
-        });
-
-        describe('when card is limited and forcing play', function() {
-            beforeEach(function() {
-                this.cardSpy.isLimited.and.returnValue(true);
-                this.canPlay = this.player.playCard(this.cardSpy, true);
-            });
-
-            it('should not set the limited played flag', function() {
-                expect(this.player.limitedPlayed).toBe(0);
+                expect(this.player.playCard(this.cardSpy)).toBe(true);
             });
         });
     });

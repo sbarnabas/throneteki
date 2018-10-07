@@ -1,72 +1,107 @@
 # Throneteki
 
-Web based implementation of A Game Of Thrones LCG 2nd Edition
+Web based implementation of A Game of Thrones LCG 2nd Edition
 
-## FAQ
+## About
 
-### What is it?
+This is the one of the respositories for the code internally known as throneteki which is running on [theironthrone.net](https://theironthrone.net/) allowing people to play AGoT 2nd edition online using only their browser.
 
-This is the respository for the code internally known as throneteki which is running on theironthrone.net allowing people to play AGoT 2nd edition online using only their browser
+Throneteki is split into multiple repositories to make the code more managable.  This repository is for the lobby server and game node server.
 
-### Does't this look a lot like Jinteki? The Android netrunner online experience?
+## Contributing
 
-Glad you noticed!  Yes, jinteki was a huge inspiration for this project, as the interface is clean and user friendly, so I've tried to make this similar in a lot of ways
+The code is written in node.js(server) and react.js(client).  Feel free to make suggestions, implement new cards, refactor bits of the code that are a bit clunky(there's a few of those atm), raise pull requests or submit bug reports
 
-### Can I contribute?
+If you are going to contribute code, try and follow the style of the existing code as much as possible and talk to me before engaging in any big refactors.  Also bear in mind there is an .eslintrc file in the project so try to follow those rules.  This linting will be enforced in the build checks and pull requests will not be merged if they fail checks.
 
-Sure!  The code is written in node.js(server) and react.js(client).  Feel free to make suggestions, implement new cards, refactor bits of the code that are a bit clunky(there's a few of those atm), raise pull requests or submit bug reports
+[Documentation for implementing cards](https://github.com/throneteki/throneteki/blob/master/docs/implementing-cards.md)
 
-If you are going to contribute code, try and follow the style of the existing code as much as possible and talk to me before engaging in any big refactors.  Also bear in mind there is an .eslintrc file in the project so try to follow those rules.
-
-The biggest help at the moment would be in terms of CSS, as that's a bit of a weakness of mine, feel free to pick up any of the issues tagged 'CSS' in the issue list.
-
-If you're not coding inclined, then just playing games on the site, and reporting bugs and issues that you find is a big help
-
-### X Y Z doesn't work
-That's not a question, but that still sucks, sorry :(  First, bear in mind the site is in its infancy so a lot of things aren't implemented yet, but you should be able to do most things with a bit of manual input.  If there's anything you can't do that you need to be able to do, let me know by raising an issue.
-
-See this document for features I have planned and a link to the currently implemented cards:  http://bit.ly/throneteki
-
-### How do I do X Y Z?
-Most things can be done be clicking on or dragging the thing you're trying to interact with.  There are some slash commands to help manually perform some things.  Those commands currently consist of:
-
-/draw x - Draws x cards
-
-/power x - Allows you to set the power count of a card to x
-
-/discard x - Discards x cards at random from your hand
+## Issues
+If you encounter any issues on the site or while playing games, please raise an issue with as much detail as possible.
 
 ## Development
 
-The game uses mongodb as storage so you'll need that installed and running
+The game uses [mongodb](https://www.mongodb.com/) as storage so you'll need that installed and running.
 
 ```
-Clone the repository
-Run npm install
+git clone https://github.com/throneteki/throneteki.git
+cd throneteki
+git submodule init
+git submodule update
+npm install
 mkdir server/logs
-cd server
-node fetchdata.js
-cd ..
-node .
+node server/scripts/fetchdata.js
+node server/scripts/importstandalonedecks.js
+node server/scripts/fetchclient.js
+NODE_ENV=production PORT=4000 node .
+node server/gamenode
 ```
 
-You'll also need a file called server/config.js that should look like this:
+There are two exectuable components and you'll need to configure/run both to run a local server.  First is the lobby server and then there are game nodes.
+
+For the lobby server, you'll need a file called server/config.js that should look like this:
 ```javascript
 var config = {
-  secret: 'somethingverysecret'
+  secret: 'somethingverysecret',
+  hmacSecret: 'somethingsupersecret',
+  dbPath: 'mongodb://127.0.0.1:27017/throneteki',
+  mqUrl: 'tcp://127.0.0.1:6000' // This is the host/port of the Zero MQ server which does the node load balancing
 };
 
 module.exports = config;
 ```
 
-This will get you up and running in development mode, using the webpack dev server and hotloading.
+For the game nodes you will need a file called server/gamenode/nodeconfig.js that looks like this:
+
+```javascript
+var config = {
+  secret: 'somethingverysecret', // This needs to match the config above
+  mqUrl: 'tcp://127.0.0.1:6000', // This is the host/port of the Zero MQ server which does the node load balancing and needs to match the config above
+  socketioPort: 9500, // This is the port for the game node to listen on
+  nodeIdentity: 'test1', // This is the identity of the node,
+  host: 'localhost'
+};
+
+module.exports = config;
+```
+
+This will get you up and running in development mode.
 
 For production:
 
 ```
-NODE_ENV=production ./node_nodules/.bin/webpack -p --config webpack.config.production.js
 NODE_ENV=production PORT=4000 node .
 ```
 
-###Build Status
-[![CircleCI](https://circleci.com/gh/cryogen/throneteki.svg?style=svg)](https://circleci.com/gh/cryogen/throneteki)
+Then for each game node (typically one per CPU/core):
+
+```
+PORT={port} SERVER={node-name} node server/gamenode
+```
+
+If you wish to make any changes to the client code, you will need to checkout the [Client Repository](https://github.com/throneteki/throneteki-client)
+
+### Coding Guidelines
+
+All JavaScript code included in Throneteki should pass (no errors, no warnings)
+linting by [ESLint](http://eslint.org/), according to the rules defined in
+`.eslintrc` at the root of this repo. To manually check that that is indeed the
+case install ESLint and run
+
+```
+eslint client/ server/ test/
+```
+
+from repository's root.
+
+All tests should also pass.  To run these manually do:
+
+```
+npm test
+```
+
+If you are making any game engine changes, these will not be accepted without unit tests to cover them.
+
+### Build Status
+
+[![Travis Build](https://travis-ci.com/throneteki/throneteki.svg?branch=master)](https://travis-ci.com/throneteki/throneteki)

@@ -1,99 +1,63 @@
 const DrawCard = require('../drawcard.js');
 
-class Reducer extends DrawCard {
-    constructor(owner, cardData, reduceBy, condition) {
+class FactionCostReducer extends DrawCard {
+    constructor(owner, cardData, reduceBy, faction) {
         super(owner, cardData);
 
         this.reduceBy = reduceBy;
-        this.condition = condition;
-        this.abilityUsed = false;
-    }
-
-    canReduce(player, card) {
-        if(!this.inPlay || this.owner !== player || !this.kneeled || this.abilityUsed) {
-            return false;
-        }
-
-        return this.condition(player, card);
-    }
-
-    onClick(player) {
-        if(!this.inPlay || player.phase !== 'marshal' || this.owner !== player || this.kneeled || this.abilityUsed) {
-            return false;
-        }
-
-        this.kneeled = true;
-
-        return true;
-    }
-
-    reduce(card, currentCost, spending) {
-        if(this.kneeled && !this.abilityUsed) {
-            var cost = currentCost - this.reduceBy;
-
-            if(spending) {
-                this.abilityUsed = true;
-            }
-
-            if(cost < 0) {
-                cost = 0;
-            }
-
-            return cost;
-        }
-
-        return currentCost;
-    }
-
-    leavesPlay() {
-        this.abilityUsed = false;
-    }
-}
-
-class FactionCostReducer extends Reducer {
-    constructor(owner, cardData, reduceBy, faction) {
-        super(owner, cardData, reduceBy, (player, card) => {
-            return card.getFaction() === faction;
-        });
-
         this.faction = faction;
     }
 
-    onClick(player) {
-        var canUse = super.onClick(player);
-
-        if(canUse) {
-            this.game.addMessage('{0} uses {1} to reduce the cost of the next {2} card by {3}',
-                player, this, this.faction, this.reduceBy);
-        }
-
-        return canUse;
+    setupCardAbilities(ability) {
+        this.action({
+            title: 'Kneel to reduce',
+            clickToActivate: true,
+            phase: 'marshal',
+            cost: ability.costs.kneelSelf(),
+            handler: context => {
+                this.game.addMessage('{0} uses {1} to reduce the cost of the next {2} card by {3}',
+                    this.controller, this, this.faction, this.reduceBy);
+                this.untilEndOfPhase(ability => ({
+                    condition: () => !context.abilityDeactivated,
+                    targetController: 'current',
+                    effect: ability.effects.reduceNextMarshalledCardCost(this.reduceBy, card => card.isFaction(this.faction))
+                }));
+            }
+        });
     }
 }
 
-class FactionCharacterCostReducer extends Reducer {
+class FactionCharacterCostReducer extends DrawCard {
     constructor(owner, cardData, reduceBy, faction) {
-        super(owner, cardData, reduceBy, (player, card) => {
-            return card.getType() === 'character' && card.getFaction() === faction;
-        });
-        
+        super(owner, cardData);
+
+        this.reduceBy = reduceBy;
         this.faction = faction;
     }
 
-    onClick(player) {
-        var canUse = super.onClick(player);
-
-        if(canUse) {
-            this.game.addMessage('{0} uses {1} to reduce the cost of the next {2} character by {3}',
-                player, this, this.faction, this.reduceBy);
-        }
-
-        return canUse;
+    setupCardAbilities(ability) {
+        this.action({
+            title: 'Kneel to reduce',
+            clickToActivate: true,
+            phase: 'marshal',
+            cost: ability.costs.kneelSelf(),
+            handler: context => {
+                this.game.addMessage('{0} uses {1} to reduce the cost of the next {2} character by {3}',
+                    this.controller, this, this.faction, this.reduceBy);
+                this.untilEndOfPhase(ability => ({
+                    condition: () => !context.abilityDeactivated,
+                    targetController: 'current',
+                    effect: ability.effects.reduceNextMarshalledCardCost(
+                        this.reduceBy,
+                        card => card.getType() === 'character' && card.isFaction(this.faction)
+                    )
+                }));
+            }
+        });
     }
 }
 
 module.exports = {
-    Reducer: Reducer,
     FactionCostReducer: FactionCostReducer,
     FactionCharacterCostReducer: FactionCharacterCostReducer
 };

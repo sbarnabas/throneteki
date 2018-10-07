@@ -1,209 +1,90 @@
-/*global describe, it, beforeEach, expect, spyOn*/
-
 const Game = require('../../../server/game/game.js');
-const Player = require('../../../server/game/player.js');
-const Spectator = require('../../../server/game/spectator.js');
 
-describe('the Game', function() {
-    var game = {};
-    var player1 = new Player('1', 'Player 1', true);
-    var spectator = new Spectator('3', 'Spectator 1');
-
+describe('Game', function() {
     beforeEach(function() {
-        game = new Game('1', 'Test Game');
+        this.gameService = jasmine.createSpyObj('gameService', ['save']);
+        this.game = new Game({ owner: {} }, { gameService: this.gameService });
 
-        game.players[player1.id] = player1;
-        game.players[spectator.id] = spectator;
+        this.player = jasmine.createSpyObj('player', ['isSpectator']);
+        this.player.name = 'Player 1';
 
-        game.initialise();
+        this.game.playersAndSpectators[this.player.name] = this.player;
 
-        player1.setPower = undefined;
+        this.chatCommands = this.game.chatCommands;
+        this.gameChat = this.game.gameChat;
+        spyOn(this.chatCommands, 'executeCommand').and.returnValue(false);
+        spyOn(this.gameChat, 'addChatMessage');
     });
 
-    describe('the chat() function', function() {
+    describe('chat()', function() {
         describe('when called by a player not in the game', function() {
             it('should not add any chat messages', function() {
-                game.chat('notinthegame', 'Test Message');
+                this.game.chat('notinthegame', 'Test Message');
 
-                expect(game.messages.length).toBe(0);
+                expect(this.gameChat.addChatMessage).not.toHaveBeenCalled();
             });
         });
 
         describe('when called by a player in the game', function() {
-            describe('with no slashes', function() {
-                it('should add their chat message', function() {
-                    game.chat(player1.id, 'Test Message');
-
-                    expect(game.messages.length).toBe(1);
-                    expect(game.messages[0].message[1].name).toBe(player1.name);
-                    expect(game.messages[0].message.join('')).toContain('Test Message');
-                });
-            });
-
-            describe('with a /power command', function() {
-                describe('with no arguments', function() {
-                    it('should prompt the user to change power to 1', function () {
-                        game.chat(player1.id, '/power');
-
-                        expect(game.messages.length).toBe(0);
-                        expect(player1.setPower).toBe(1);
-                    });
-                });
-
-                describe('with a string argument', function() {
-                    it('should prompt the user to change power to 1', function () {
-                        game.chat(player1.id, '/power test');
-
-                        expect(game.messages.length).toBe(0);
-                        expect(player1.setPower).toBe(1);
-                    });
-                });
-
-                describe('with a negative argument', function() {
-                    it('should prompt the user to change power to 1', function () {
-                        game.chat(player1.id, '/power -1');
-
-                        expect(game.messages.length).toBe(0);
-                        expect(player1.setPower).toBe(1);
-                    });
-                });
-
-                describe('with a valid argument', function() {
-                    it('should prompt the user to change power to the argument', function () {
-                        game.chat(player1.id, '/power 3');
-
-                        expect(game.messages.length).toBe(0);
-                        expect(player1.setPower).toBe(3);
-                    });
-                });
-
-                describe('half way through a message', function() {
-                    it('should not trigger the /power command', function() {
-                        game.chat(player1.id, 'test test /power test');
-
-                        expect(player1.setPower).toBe(undefined);
-                    });
-                });
-            });
-
-            describe('with a /draw command', function() {
+            describe('and the message is a command', function() {
                 beforeEach(function() {
-                    spyOn(player1, 'drawCardsToHand');
+                    this.chatCommands.executeCommand.and.returnValue(true);
+
+                    this.game.chat(this.player.name, '/this is a command');
                 });
 
-                describe('with no arguments', function() {
-                    it('should draw 1 card', function () {
-                        game.chat(player1.id, '/draw');
-
-                        expect(game.messages.length).toBe(1);
-                        expect(player1.drawCardsToHand).toHaveBeenCalledWith(1);
-                    });
+                it('should execute the command', function() {
+                    expect(this.chatCommands.executeCommand).toHaveBeenCalledWith(this.player, '/this', ['/this', 'is', 'a', 'command']);
                 });
 
-                describe('with a string argument', function() {
-                    it('should draw 1 card', function () {
-                        game.chat(player1.id, '/draw test');
-
-                        expect(game.messages.length).toBe(1);
-                        expect(player1.drawCardsToHand).toHaveBeenCalledWith(1);
-                    });
-                });
-
-                describe('with a negative argument', function() {
-                    it('should draw 1 card', function () {
-                        game.chat(player1.id, '/draw -1');
-
-                        expect(game.messages.length).toBe(1);
-                        expect(player1.drawCardsToHand).toHaveBeenCalledWith(1);
-                    });
-                });
-
-                describe('with a valid argument', function() {
-                    it('should draw 4 cards', function () {
-                        game.chat(player1.id, '/draw 4');
-
-                        expect(game.messages.length).toBe(1);
-                        expect(player1.drawCardsToHand).toHaveBeenCalledWith(4);
-                    });
+                it('should not add any chat messages', function() {
+                    expect(this.gameChat.addChatMessage).not.toHaveBeenCalled();
                 });
             });
 
-            describe('with a /discard command', function() {
+            describe('and the message is a not a valid command', function() {
                 beforeEach(function() {
-                    spyOn(player1, 'discardAtRandom');
+                    this.chatCommands.executeCommand.and.returnValue(false);
+
+                    this.game.chat(this.player.name, 'this is a message');
                 });
 
-                describe('with no arguments', function() {
-                    it('should discard 1 card', function () {
-                        game.chat(player1.id, '/discard');
-
-                        expect(game.messages.length).toBe(1);
-                        expect(player1.discardAtRandom).toHaveBeenCalledWith(1);
-                    });
-                });
-
-                describe('with a string argument', function() {
-                    it('should discard 1 card', function () {
-                        game.chat(player1.id, '/discard test');
-
-                        expect(game.messages.length).toBe(1);
-                        expect(player1.discardAtRandom).toHaveBeenCalledWith(1);
-                    });
-                });
-
-                describe('with a negative argument', function() {
-                    it('should discard 1 card', function () {
-                        game.chat(player1.id, '/discard -1');
-
-                        expect(game.messages.length).toBe(1);
-                        expect(player1.discardAtRandom).toHaveBeenCalledWith(1);
-                    });
-                });
-
-                describe('with a valid argument', function() {
-                    it('should discard 3 cards', function () {
-                        game.chat(player1.id, '/discard 3');
-
-                        expect(game.messages.length).toBe(1);
-                        expect(player1.discardAtRandom).toHaveBeenCalledWith(3);
-                    });
+                it('should add the chat messages', function() {
+                    expect(this.gameChat.addChatMessage).toHaveBeenCalledWith(jasmine.any(String), this.player, 'this is a message');
                 });
             });
-
-            describe('with a /pillage command', function() {
-                beforeEach(function() {
-                    spyOn(player1, 'discardFromDraw');
-                });
-
-                describe('with no arguments', function() {
-                    it('should discard 1 card', function () {
-                        game.chat(player1.id, '/pillage');
-
-                        expect(game.messages.length).toBe(1);
-                        expect(player1.discardFromDraw).toHaveBeenCalledWith(1);
-                    });
-                });
-            });
-
         });
 
         describe('when called by a spectator in the game', function() {
-            describe('with no slashes', function () {
-                it('should add their chat message', function() {
-                    game.chat(spectator.id, 'Test Message');
+            beforeEach(function() {
+                this.player.isSpectator.and.returnValue(true);
+            });
 
-                    expect(game.messages.length).toBe(1);
-                    expect(game.messages[0].message[1].name).toBe(spectator.name);
-                    expect(game.messages[0].message.join('')).toContain('Test Message');
+            describe('and the message is a command', function() {
+                beforeEach(function() {
+                    this.chatCommands.executeCommand.and.returnValue(true);
+
+                    this.game.chat(this.player.name, '/this is a command');
+                });
+
+                it('should not execute the command', function() {
+                    expect(this.chatCommands.executeCommand).not.toHaveBeenCalled();
+                });
+
+                it('should add it as a chat messages', function() {
+                    expect(this.gameChat.addChatMessage).toHaveBeenCalledWith(jasmine.any(String), this.player, '/this is a command');
                 });
             });
 
-            describe('with a /power command', function() {
-                it('should add the message to the messages', function() {
-                    game.chat(spectator.id, '/power');
+            describe('and the message is a not a valid command', function() {
+                beforeEach(function() {
+                    this.chatCommands.executeCommand.and.returnValue(false);
 
-                    expect(game.messages.length).toBe(1);
-                    expect(player1.setPower).toBe(undefined);
+                    this.game.chat(this.player.name, 'this is a message');
+                });
+
+                it('should add the chat messages', function() {
+                    expect(this.gameChat.addChatMessage).toHaveBeenCalledWith(jasmine.any(String), this.player, 'this is a message');
                 });
             });
         });

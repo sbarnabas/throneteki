@@ -1,20 +1,20 @@
-/*global describe, it, beforeEach, expect*/
-/* eslint camelcase: 0 */
-
-const _ = require('underscore');
 const Player = require('../../../server/game/player.js');
 
 describe('the Player', () => {
-    var player = new Player('1', 'Player 1', true);
-    var drawDeck = _([
-      { name: 'foo' },
-      { name: 'bar' },
-      { name: 'baz' },
-      { name: 'ball' }
-    ]);
+    var game = jasmine.createSpyObj('game', ['raiseEvent']);
+
+    var player = new Player('1', {username: 'Player 1', settings: {}}, true, game);
+    var drawDeck = [
+        { name: 'foo' },
+        { name: 'bar' },
+        { name: 'baz' },
+        { name: 'ball' }
+    ];
 
     beforeEach(() => {
+        player.deck = drawDeck;
         player.initialise();
+
         player.drawDeck = drawDeck;
     });
 
@@ -24,7 +24,7 @@ describe('the Player', () => {
                 var cards = player.searchDrawDeck(() => {
                     return true;
                 });
-                expect(cards.length).toBe(drawDeck.size());
+                expect(cards.length).toBe(drawDeck.length);
             });
 
             it('should filter the results using the predicate', () => {

@@ -1,99 +1,155 @@
 const _ = require('underscore');
 const EventEmitter = require('events');
-const uuid = require('node-uuid');
 
-const cards = require('./cards');
+const AttachmentValidityCheck = require('./AttachmentValidityCheck.js');
+const ChatCommands = require('./chatcommands.js');
+const GameChat = require('./gamechat.js');
+const EffectEngine = require('./effectengine.js');
+const Effect = require('./effect.js');
 const Player = require('./player.js');
 const Spectator = require('./spectator.js');
-const BaseCard = require('./basecard.js');
+const AnonymousSpectator = require('./anonymousspectator.js');
+const GamePipeline = require('./gamepipeline.js');
+const Phases = require('./gamesteps/Phases');
+const SimpleStep = require('./gamesteps/simplestep.js');
+const ChooseOpponentPrompt = require('./gamesteps/chooseopponentprompt.js');
+const DeckSearchPrompt = require('./gamesteps/DeckSearchPrompt');
+const MenuPrompt = require('./gamesteps/menuprompt.js');
+const IconPrompt = require('./gamesteps/iconprompt.js');
+const SelectCardPrompt = require('./gamesteps/selectcardprompt.js');
+const EventWindow = require('./gamesteps/eventwindow.js');
+const AbilityResolver = require('./gamesteps/abilityresolver.js');
+const ForcedTriggeredAbilityWindow = require('./gamesteps/ForcedTriggeredAbilityWindow.js');
+const TriggeredAbilityWindow = require('./gamesteps/TriggeredAbilityWindow.js');
+const InterruptWindow = require('./gamesteps/InterruptWindow');
+const KillCharacters = require('./gamesteps/killcharacters.js');
+const TitlePool = require('./TitlePool.js');
+const Event = require('./event.js');
+const AtomicEvent = require('./AtomicEvent.js');
+const GroupedCardEvent = require('./GroupedCardEvent.js');
+const SimultaneousEvents = require('./SimultaneousEvents');
+const ChooseGoldSourceAmounts = require('./gamesteps/ChooseGoldSourceAmounts.js');
+const DropCommand = require('./ServerCommands/DropCommand');
+const CardVisibility = require('./CardVisibility');
 
 class Game extends EventEmitter {
-    constructor(owner, name) {
+    constructor(details, options = {}) {
         super();
 
-        this.players = {};
+        this.allCards = [];
+        this.attachmentValidityCheck = new AttachmentValidityCheck(this);
+        this.effectEngine = new EffectEngine(this);
+        this.playersAndSpectators = {};
         this.playerPlots = {};
         this.playerCards = {};
-        this.messages = [];
-
-        this.name = name;
-        this.id = uuid.v1();
-        this.owner = owner;
+        this.gameChat = new GameChat();
+        this.chatCommands = new ChatCommands(this);
+        this.pipeline = new GamePipeline();
+        this.id = details.id;
+        this.name = details.name;
+        this.allowSpectators = details.allowSpectators;
+        this.showHand = details.showHand;
+        this.useRookery = details.useRookery;
+        this.owner = details.owner.username;
         this.started = false;
         this.playStarted = false;
-    }
+        this.createdAt = new Date();
+        this.savedGameId = details.savedGameId;
+        this.gameType = details.gameType;
+        this.abilityContextStack = [];
+        this.abilityWindowStack = [];
+        this.password = details.password;
+        this.cancelPromptUsed = false;
+        this.claim = {
+            isApplying: false,
+            type: undefined
+        };
+        this.isMelee = !!details.isMelee;
+        this.noTitleSetAside = !!details.noTitleSetAside;
+        this.titlePool = new TitlePool(this, options.titleCardData || []);
+        this.cardData = options.cardData || [];
+        this.packData = options.packData || [];
+        this.restrictedListData = options.restrictedListData || [];
+        this.remainingPhases = [];
+        this.skipPhase = {};
+        this.cardVisibility = new CardVisibility(this);
 
-    addMessage(message) {
-        var args = Array.from(arguments).slice(1);
-        var formattedMessage = this.formatMessage(message, args);
-        this.messages.push({ date: new Date(), message: formattedMessage });
-    }
-
-    formatMessage(format, args) {
-        var messageFragments = format.split(/(\{\d+\})/);
-        return _.map(messageFragments, fragment => {
-            var argMatch = fragment.match(/\{(\d+)\}/);
-            if(argMatch) {
-                var arg = args[argMatch[1]];
-                if(!_.isUndefined(arg) && !_.isNull(arg)) {
-                    if(arg instanceof BaseCard) {
-                        return { code: arg.code, label: arg.name, type: arg.getType() };
-                    } else if(arg instanceof Player) {
-                        return { name: arg.name };
-                    }
-
-                    return arg;
-                }
-
-                return '';
-            }
-
-            return fragment;
+        _.each(details.players, player => {
+            this.playersAndSpectators[player.user.username] = new Player(player.id, player.user, this.owner === player.user.username, this);
         });
+
+        _.each(details.spectators, spectator => {
+            this.playersAndSpectators[spectator.user.username] = new Spectator(spectator.id, spectator.user);
+        });
+
+        this.setMaxListeners(0);
+
+        this.router = options.router;
+
+        this.pushAbilityContext({ resolutionStage: 'framework' });
     }
 
-    isSpectator(player) {
-        return player.constructor === Spectator;
+    reportError(e) {
+        this.router.handleError(this, e);
+    }
+
+    addMessage() {
+        this.gameChat.addMessage(...arguments);
+    }
+
+    addAlert() {
+        this.gameChat.addAlert(...arguments);
+    }
+
+    get messages() {
+        return this.gameChat.messages;
+    }
+
+    hasActivePlayer(playerName) {
+        return this.playersAndSpectators[playerName] && !this.playersAndSpectators[playerName].left;
     }
 
     getPlayers() {
-        var players = {};
-
-        _.reduce(this.players, (playerList, player) => {
-            if(!this.isSpectator(player)) {
-                playerList[player.id] = player;
-            }
-
-            return playerList;
-        }, players);
-
-        return players;
+        return Object.values(this.playersAndSpectators).filter(player => !player.isSpectator());
     }
 
-    getPlayerById(playerId) {
-        return this.getPlayers()[playerId];
+    getNumberOfPlayers() {
+        return this.getPlayers().length;
+    }
+
+    getPlayerByName(playerName) {
+        let player = this.playersAndSpectators[playerName];
+
+        if(!player || player.isSpectator()) {
+            return;
+        }
+
+        return player;
     }
 
     getPlayersInFirstPlayerOrder() {
-        return _.sortBy(this.getPlayers(), 'firstPlayer');
+        return this.getPlayersInBoardOrder(player => player.firstPlayer);
+    }
+
+    getPlayersInBoardOrder(predicate) {
+        let players = this.getPlayers();
+        let index = players.findIndex(predicate);
+        if(index === -1) {
+            return players;
+        }
+
+        let beforeMatch = players.slice(0, index);
+        let matchAndAfter = players.slice(index);
+
+        return matchAndAfter.concat(beforeMatch);
     }
 
     getPlayersAndSpectators() {
-        return this.players;
+        return this.playersAndSpectators;
     }
 
     getSpectators() {
-        var spectators = [];
-
-        _.reduce(this.players, (spectators, player) => {
-            if(this.isSpectator(player)) {
-                spectators.push(player);
-            }
-
-            return spectators;
-        }, spectators);
-
-        return spectators;
+        return _.pick(this.playersAndSpectators, player => player.isSpectator());
     }
 
     getFirstPlayer() {
@@ -102,1151 +158,469 @@ class Game extends EventEmitter {
         });
     }
 
-    getOtherPlayer(player) {
-        var otherPlayer = _.find(this.getPlayers(), p => {
-            return p.id !== player.id;
-        });
-
-        return otherPlayer;
+    setFirstPlayer(firstPlayer) {
+        for(let player of this.getPlayers()) {
+            player.firstPlayer = player === firstPlayer;
+        }
+        this.raiseEvent('onFirstPlayerDetermined', { player: firstPlayer });
     }
 
-    startGameIfAble() {
-        if(_.all(this.getPlayers(), player => {
-            return player.readyToStart;
-        })) {
-            _.each(this.getPlayers(), player => {
-                player.startGame();
-
-                this.playStarted = true;
-            });
-        }
+    getOpponents(player) {
+        return this.getPlayers().filter(p => p !== player);
     }
 
-    mulligan(playerId) {
-        var player = this.getPlayerById(playerId);
-
-        if(this.playStarted || !player) {
-            return;
-        }
-
-        if(player.mulligan()) {
-            this.addMessage('{0} has taken a mulligan', player);
-        }
+    isCardVisible(card, player) {
+        return this.cardVisibility.isVisible(card, player);
     }
 
-    keep(playerId) {
-        var player = this.getPlayerById(playerId);
-
-        if(!player) {
-            return;
-        }
-
-        player.keep();
-
-        this.addMessage('{0} has kept their hand', player);
+    anyCardsInPlay(predicate) {
+        return this.allCards.some(card => card.location === 'play area' && predicate(card));
     }
 
-    playCard(playerId, cardId, isDrop, sourceList) {
-        var player = this.getPlayerById(playerId);
-
-        if(!player) {
-            return;
-        }
-
-        var handled = false;
-        if(player === this.selectPlayer && this.selectCallback) {
-            handled = this.selectCallback(player, cardId);
-
-            if(handled) {
-                if(!this.multiSelect) {
-                    player.selectCard = false;
-                }
-
-                return;
-            }
-        }
-
-        if(player.activePlot && !player.activePlot.canPlay(player, cardId)) {
-            return;
-        }
-
-        var otherPlayer = this.getOtherPlayer(player);
-        if(otherPlayer && otherPlayer.activePlot && !otherPlayer.activePlot.canPlay(player, cardId)) {
-            return;
-        }
-
-        if(!player.playCard(cardId, isDrop, sourceList)) {
-            return;
-        }
+    filterCardsInPlay(predicate) {
+        return this.allCards.filter(card => card.location === 'play area' && predicate(card));
     }
 
-    checkForAttachments() {
-        var playersWithAttachments = _.filter(this.getPlayers(), p => {
-            return p.hasUnmappedAttachments();
-        });
-        var playersWaiting = _.filter(this.getPlayers(), p => {
-            return !p.hasUnmappedAttachments();
-        });
-
-        if(playersWithAttachments.length !== 0) {
-            _.each(playersWithAttachments, p => {
-                p.menuTitle = 'Select attachment locations';
-                p.buttons = [
-                    { command: 'mapattachments', text: 'Done' }
-                ];
-                p.waitingForAttachments = true;
-            });
-
-            _.each(playersWaiting, p => {
-                p.menuTitle = 'Waiting for opponent to finish setup';
-                p.buttons = [];
-            });
-        } else {
-            _.each(this.getPlayers(), p => {
-                p.setupDone();
-                p.startPlotPhase();
-            });
-        }
-    }
-
-    setupDone(playerId) {
-        var player = this.getPlayerById(playerId);
-
-        if(!player) {
-            return;
-        }
-
-        player.setup = true;
-
-        this.addMessage('{0} has finished setup', player);
-
-        if(!_.all(this.getPlayers(), p => {
-            return p.setup;
-        })) {
-            player.menuTitle = 'Waiting for opponent to finish setup';
-            player.buttons = [];
-        } else {
-            this.checkForAttachments();
-        }
-    }
-
-    firstPlayerPrompt(initiativeWinner) {
-        initiativeWinner.firstPlayer = true;
-        initiativeWinner.menuTitle = 'Select a first player';
-        initiativeWinner.buttons = [
-            { command: 'firstplayer', text: 'Me', arg: 'me' }
-        ];
-
-        if(_.size(this.getPlayers()) > 1) {
-            initiativeWinner.buttons.push({ command: 'firstplayer', text: 'Opponent', arg: 'opponent' });
-        }
-
-        var otherPlayer = this.getOtherPlayer(initiativeWinner);
-
-        if(otherPlayer) {
-            otherPlayer.menuTitle = 'Waiting for opponent to select first player';
-            otherPlayer.buttons = [];
-        }
-    }
-
-    notifyLeavingPlay(player, card) {
-        this.emit('cardLeavingPlay', this, player, card);
-        var cardImplementation = cards[card.code];
-        if(cardImplementation && cardImplementation.unregister) {
-            cardImplementation.unregister(this, player, card);
-        }
-    }
-
-    selectPlot(playerId, plotId) {
-        var player = this.getPlayerById(playerId);
-
-        if(!player || !player.selectPlot(plotId)) {
-            return;
-        }
-
-        this.addMessage('{0} has selected a plot', player);
-
-        if(!_.all(this.getPlayers(), p => {
-            return !!p.selectedPlot;
-        })) {
-            player.menuTitle = 'Waiting for opponent to select plot';
-            player.buttons = [];
-        } else {
-            var initiativeWinner = undefined;
-            var highestInitiative = -1;
-            var lowestPower = -1;
-
-            // reveal plots when everyone has selected
-            _.each(this.getPlayers(), p => {
-                p.revealPlot();
-            });
-
-            // determine initiative winner
-            _.each(this.getPlayers(), p => {
-                var playerInitiative = p.getTotalInitiative();
-                var playerPower = p.power;
-
-                if(playerInitiative === highestInitiative) {
-                    if(playerPower === lowestPower) {
-                        var diceRoll = _.random(1, 20);
-                        if(diceRoll % 2 === 0) {
-                            highestInitiative = playerInitiative;
-                            lowestPower = playerPower;
-                            initiativeWinner = p;
-                        }
-                    }
-
-                    if(playerPower < lowestPower) {
-                        highestInitiative = playerInitiative;
-                        lowestPower = playerPower;
-                        initiativeWinner = p;
-                    }
-                }
-
-                if(playerInitiative > highestInitiative) {
-                    highestInitiative = playerInitiative;
-                    lowestPower = playerPower;
-                    initiativeWinner = p;
-                }
-            });
-
-            // initiative winner sets the first player
-            // note that control flow for the plot phase after this continues under
-            // the setFirstPlayer function
-            if(_.size(this.players) === 1) {
-                this.setFirstPlayer(player.id, 'me');
-            } else {
-                this.firstPlayerPrompt(initiativeWinner);
-            }
-        }
-    }
-
-    drawPhase(firstPlayer) {
-        _.each(this.getPlayers(), p => {
-            this.emit('beginDrawPhase', this, p);
-            p.drawPhase();
-        });
-
-        this.beginMarshal(firstPlayer);
-    }
-
-    beginMarshal(player) {
-        this.emit('beginMarshal', this, player);
-
-        player.beginMarshal();
-
-        var otherPlayer = this.getOtherPlayer(player);
-
-        if(otherPlayer) {
-            otherPlayer.menuTitle = 'Waiting for opponent to marshal their cards';
-            otherPlayer.buttons = [];
-        }
-    }
-
-    playerRevealDone(player) {
-        var otherPlayer = this.getOtherPlayer(player);
-
-        player.revealFinished = true;
-
-        if(otherPlayer) {
-            this.resolvePlotEffects(otherPlayer);
-        } else {
-            player.menuTitle = 'Perform any after reveal actions';
-            player.buttons = [{ command: 'doneWhenRealedEffects', text: 'Done' }];
-        }
-    }
-
-    resolvePlotEffects(player) {
-        player.menuTitle = 'Select player to resolve their plot';
-        player.buttons = [];
-
-        _.each(this.getPlayers(), p => {
-            if(p.activePlot.hasRevealEffect() && !p.revealFinished) {
-                player.buttons.push({ command: 'resolvePlotEffect', text: p.name, arg: p.id });
-            }
-        });
-
-        if(player.buttons.length === 1) {
-            this.resolvePlayerPlotEffect(player.buttons[0].arg);
-
-            return;
-        }
-
-        var firstPlayer = this.getFirstPlayer();
-        var otherPlayer = this.getOtherPlayer(firstPlayer);
-
-        if(_.isEmpty(player.buttons)) {
-            firstPlayer.menuTitle = 'Perform any after reveal actions';
-            firstPlayer.buttons = [{ command: 'doneWhenRealedEffects', text: 'Done' }];
-        }
-
-        if(otherPlayer) {
-            otherPlayer.menuTitle = 'Waiting for first player to resolve plot phase';
-            otherPlayer.buttons = [];
-        }
-    }
-
-    resolvePlayerPlotEffect(playerId) {
-        var player = this.getPlayerById(playerId);
-        var otherPlayer = this.getOtherPlayer(player);
-        var firstPlayer = player.firstPlayer ? player : otherPlayer;
-
-        if(otherPlayer && otherPlayer.activePlot.hasRevealEffect()) {
-            firstPlayer.menuTitle = 'Waiting for opponent to resolve plot effect';
-            firstPlayer.buttons = [];
-        }
-
-        if(player.activePlot.onReveal(player)) {
-            this.playerRevealDone(player);
-        }
-    }
-
-    setFirstPlayer(sourcePlayer, who) {
-        var firstPlayer = undefined;
-
-        var player = this.getPlayers()[sourcePlayer];
-
-        if(!player) {
-            return;
-        }
-
-        _.each(this.getPlayers(), player => {
-            if(player.id === sourcePlayer && who === 'me') {
-                player.firstPlayer = true;
-                firstPlayer = player;
-            } else if(player.id !== sourcePlayer && who !== 'me') {
-                player.firstPlayer = true;
-                firstPlayer = player;
-            } else {
-                player.firstPlayer = false;
+    getNumberOfCardsInPlay(predicate) {
+        return this.allCards.reduce((num, card) => {
+            if(card.location === 'play area' && predicate(card)) {
+                return num + 1;
             }
 
-            player.menuTitle = '';
-            player.buttons = [];
-        });
-
-        this.addMessage('{0} has selected {1} to be the first player', player, firstPlayer);
-
-        this.resolvePlotEffects(firstPlayer);
+            return num;
+        }, 0);
     }
 
-    attachCard(player, cardId) {
-        var card = player.findCardInPlayByUuid(cardId);
-        var otherPlayer = this.getOtherPlayer(player);
-
-        if(!card) {
-            if(!otherPlayer) {
-                return;
-            }
-
-            card = otherPlayer.findCardInPlayByUuid(cardId);
-
-            if(!card) {
-                return;
-            }
-        }
-
-        if(!player.canAttach(player.selectedAttachment, card)) {
-            return;
-        }
-
-        var targetPlayer = this.getPlayers()[card.owner.id];
-        if(targetPlayer === player && player.phase === 'setup') {
-            // We put attachments on the board during setup, now remove it
-            player.attach(player.selectedAttachment, cardId);
-            player.cardsInPlay = player.removeCardByUuid(player.cardsInPlay, player.selectedAttachment);
-        } else {
-            targetPlayer.attach(player.selectedAttachment, cardId);
-            player.removeFromHand(player.selectedAttachment);
-        }
-
-        if(player.dropPending) {
-            player.discardPile = player.removeCardByUuid(player.discardPile, player.selectedAttachment);
-        }
-
-        player.selectCard = false;
-        player.selectedAttachment = undefined;
-
-        if(player.dropPending) {
-            player.dropPending = false;
-
-            player.menuTitle = player.oldMenuTitle;
-            player.buttons = player.oldButtons;
-
-            return;
-        }
-
-        if(player.phase === 'setup') {
-            this.checkForAttachments();
-        } else {
-            player.buttons = [{ command: 'donemarshal', text: 'Done' }];
-            player.menuTitle = 'Marshal your cards';
-        }
+    anyPlotHasTrait(trait) {
+        return _.any(this.getPlayers(), player =>
+            player.activePlot &&
+            player.activePlot.hasTrait(trait));
     }
 
-    handleChallenge(player, otherPlayer, cardId) {
-        var card = player.findCardInPlayByUuid(cardId);
-
-        if(!card) {
-            if(!player.pickingStealth) {
-                return false;
+    getNumberOfPlotsWithTrait(trait) {
+        return _.reduce(this.getPlayers(), (sum, player) => {
+            if(player.activePlot && player.activePlot.hasTrait(trait)) {
+                return sum + 1;
             }
 
-            if(otherPlayer) {
-                var otherCardInPlay = otherPlayer.findCardInPlayByUuid(cardId);
-
-                if(!otherCardInPlay) {
-                    return false;
-                }
-
-                if(!player.stealthCard.useStealthToBypass(otherCardInPlay)) {
-                    return false;
-                }
-
-                this.addMessage('{0} has chosen {1} as the stealth target for {2}', player, otherCardInPlay, player.stealthCard);
-
-                if(this.doStealth(player)) {
-                    return true;
-                }
-            }
-        } else {
-            if(!player.selectingChallengers || card.kneeled) {
-                return false;
-            }
-
-            var challengeCard = player.canAddToChallenge(cardId);
-            if(!challengeCard) {
-                return false;
-            }
-
-            this.canAddToChallenge = true;
-            this.emit('beforeChallengerSelected', this, player, challengeCard);
-
-            if(this.canAddToChallenge) {
-                player.addToChallenge(challengeCard);
-            }
-        }
-
-        return true;
+            return sum;
+        }, 0);
     }
 
-    handleClaim(player, otherPlayer, cardId) {
-        var card = player.findCardInPlayByUuid(cardId);
-
-        if(!card || card.getType() !== 'character') {
-            return;
-        }
-
-        player.killCharacter(card);
-
-        if(player.claimToDo === 0) {
-            player.doneClaim();
-
-            if(otherPlayer) {
-                otherPlayer.beginChallenge();
-            }
-        }
+    isDuringChallenge(matchers = {}) {
+        return this.currentChallenge && this.currentChallenge.isMatch(matchers);
     }
 
-    processCardClicked(player, cardId) {
-        var otherPlayer = this.getOtherPlayer(player);
-        var card = player.findCardInPlayByUuid(cardId);
+    addEffect(source, properties) {
+        this.addSimultaneousEffects([{ source: source, properties: properties }]);
+    }
 
-        if(player.phase === 'setup' && !player.waitingForAttachments) {
-            return false;
+    addSimultaneousEffects(effectProperties) {
+        let effects = effectProperties.reduce((array, effect) => {
+            let flattenedProperties = Effect.flattenProperties(effect.properties);
+            let effects = flattenedProperties.map(props => new Effect(this, effect.source, props));
+            return array.concat(effects);
+        }, []);
+        this.effectEngine.addSimultaneous(effects);
+    }
+
+    selectPlot(player, plot) {
+        for(const p of player.plotDeck) {
+            p.selected = false;
         }
 
-        if((player.phase === 'setup' || player.phase === 'marshal' || player.dropPending) && player.selectedAttachment) {
-            this.attachCard(player, cardId);
-
-            return true;
-        }
-
-        if(player.phase === 'challenge' && player.currentChallenge) {
-            return this.handleChallenge(player, otherPlayer, cardId);
-        }
-
-        if(player.phase === 'claim' && player.currentChallenge === 'military') {
-            this.handleClaim(player, otherPlayer, cardId);
-
-            return true;
-        }
-
-        if(card && card.onClick(player)) {
-            return true;
-        }
-
-        if(player.phase === 'setup') {
-            if(card && card.getType() === 'attachment') {
-                player.promptForAttachment(card);
-                return true;
-            }
-        }
-
-        return false;
+        plot.selected = true;
     }
 
     cardClicked(sourcePlayer, cardId) {
-        var player = this.getPlayers()[sourcePlayer];
+        let player = this.getPlayerByName(sourcePlayer);
+        let card = this.allCards.find(card => card.uuid === cardId);
 
-        if(!player) {
+        if(!player || !card) {
             return;
         }
 
-        var handled = false;
-
-        if(player === this.selectPlayer && this.selectCallback) {
-            handled = this.selectCallback(player, cardId);
-
-            if(handled) {
-                if(!this.multiSelect) {
-                    player.selectCard = false;
-                }    
-
-                return;
-            }
+        if(this.pipeline.handleCardClicked(player, card)) {
+            return;
         }
 
-        handled = this.processCardClicked(player, cardId);
-
-        if(!handled) {
-            var cardInPlay = player.findCardInPlayByUuid(cardId);
-
-            if(cardInPlay && !cardInPlay.facedown) {
-                cardInPlay.kneeled = !cardInPlay.kneeled;
-            }
+        if(card.location === 'plot deck') {
+            this.selectPlot(player, card);
+            return;
         }
+
+        if(player.playCard(card)) {
+            return;
+        }
+
+        if(card.onClick(player)) {
+            return;
+        }
+
+        this.defaultCardClick(player, card);
     }
 
-    discardCardClicked(sourcePlayer, cardId) {
-        var player = this.getPlayerById(sourcePlayer);
-
-        if(!player) {
+    defaultCardClick(player, card) {
+        if(card.facedown || card.controller !== player || !['faction', 'play area'].includes(card.location)) {
             return;
         }
 
-        var handled = false;
-        if(player === this.selectPlayer && this.selectCallback) {
-            handled = this.selectCallback(player, cardId);
-
-            if(handled) {
-                player.selectCard = false;
-
-                return;
-            }
-        }
-    }
-
-    showDrawDeck(playerId) {
-        var player = this.getPlayerById(playerId);
-
-        if(!player) {
-            return;
-        }
-
-        if(!player.showDeck) {
-            player.showDrawDeck();
-
-            this.addMessage('{0} is looking at their deck', player);
+        if(card.kneeled) {
+            player.standCard(card, { force: true });
         } else {
-            player.showDeck = false;
-
-            this.addMessage('{0} stops looking at their deck', player);
+            player.kneelCard(card, { force: true });
         }
+
+        let standStatus = card.kneeled ? 'kneels' : 'stands';
+        let cardFragment = card.getType() === 'faction' ? 'their faction card' : card;
+
+        this.addAlert('danger', '{0} {1} {2}', player, standStatus, cardFragment);
     }
 
-    drop(playerId, cardId, source, target) {
-        var player = this.getPlayerById(playerId);
-
-        if(!player) {
-            return;
-        }
-
-        if(player.drop(cardId, source, target)) {
-            this.addMessage('{0} has moved a card from their {1} to their {2}', player, source, target);
-        }
-    }
-
-    marshalDone(playerId) {
-        var player = this.getPlayerById(playerId);
-
-        if(!player) {
-            return;
-        }
-
-        player.marshalDone();
-
-        this.addMessage('{0} has finished marshalling', player);
-
-        var unMarshalledPlayer = _.find(this.getPlayers(), p => {
-            return !p.marshalled;
+    cardHasMenuItem(card, player, menuItem) {
+        let menu = card.getMenu(player) || [];
+        return menu.some(m => {
+            return m.method === menuItem.method;
         });
-
-        if(unMarshalledPlayer) {
-            player.menuTitle = 'Waiting for opponent to finish marshalling';
-            player.buttons = [];
-
-            this.beginMarshal(unMarshalledPlayer);
-        } else {
-            var firstPlayer = this.getFirstPlayer();
-
-            firstPlayer.activePlot.onBeginChallengePhase();
-
-            firstPlayer.beginChallenge();
-
-            var otherPlayer = this.getOtherPlayer(firstPlayer);
-
-            if(otherPlayer) {
-                otherPlayer.activePlot.onBeginChallengePhase();
-                otherPlayer.menuTitle = 'Waiting for opponent to initiate challenge';
-                otherPlayer.buttons = [];
-            }
-        }
     }
 
-    startChallenge(playerId, challengeType) {
-        var player = this.getPlayerById(playerId);
+    callCardMenuCommand(card, player, menuItem) {
+        if(!card || !card[menuItem.method] || !this.cardHasMenuItem(card, player, menuItem)) {
+            return;
+        }
+
+        card[menuItem.method](player, menuItem.arg);
+    }
+
+    menuItemClick(sourcePlayer, cardId, menuItem) {
+        var player = this.getPlayerByName(sourcePlayer);
+
         if(!player) {
             return;
         }
 
-        if(player.challenges.complete >= player.challenges.maxTotal) {
+        if(menuItem.command === 'click') {
+            this.cardClicked(sourcePlayer, cardId);
             return;
         }
 
-        if(player.challenges[challengeType].performed >= player.challenges[challengeType].max) {
+        let card = this.allCards.find(card => card.uuid === cardId);
+
+        if(!card) {
             return;
         }
 
-        player.challengeType = challengeType;
+        switch(card.location) {
+            case 'active plot':
+                this.callCardMenuCommand(player.activePlot, player, menuItem);
+                break;
+            case 'agenda':
+                this.callCardMenuCommand(player.agenda, player, menuItem);
+                break;
+            case 'play area':
+                if(card.controller !== player && !menuItem.anyPlayer) {
+                    return;
+                }
 
-        if(!player.activePlot.canChallenge(player, challengeType)) {
-            return;
+                this.callCardMenuCommand(card, player, menuItem);
+                break;
         }
-
-        var otherPlayer = this.getOtherPlayer(player);
-        if(otherPlayer && !otherPlayer.activePlot.canChallenge(player, challengeType)) {
-            return;
-        }
-
-        player.startChallenge(challengeType);
     }
 
-    doStealth(player) {
-        var stealthCard = player.cardsInChallenge.find(card => {
-            return card.needsStealthTarget();
-        });
+    showDrawDeck(playerName, newValue) {
+        let player = this.getPlayerByName(playerName);
 
-        if(stealthCard) {
-            player.menuTitle = 'Select stealth target for ' + stealthCard.name;
-            player.buttons = [
-                { command: 'donestealth', text: 'Done' }
-            ];
-            player.stealthCard = stealthCard;
-            player.selectCard = true;
-            player.pickingStealth = true;
-
-            return true;
-        }
-
-        this.addMessage('{0} has initiated a {1} challenge with strength {2}', player, player.currentChallenge, player.challengeStrength);
-
-        var otherPlayer = this.getOtherPlayer(player);
-
-        player.pickingStealth = false;
-
-        if(otherPlayer) {
-            player.menuTitle = 'Waiting for opponent to defend';
-            player.buttons = [];
-            player.selectCard = false;
-
-            otherPlayer.beginDefend(player.currentChallenge);
-        }
-
-        return false;
-    }
-
-    doneChallenge(playerId) {
-        var player = this.getPlayerById(playerId);
         if(!player) {
             return;
         }
 
-        if(!player.areCardsSelected()) {
-            player.beginChallenge();
-            return;
+        if(newValue === null || newValue === undefined) {
+            newValue = !player.showDeck;
         }
 
-        var otherPlayer = this.getOtherPlayer(player);
+        if(player.showDeck ^ newValue) {
+            player.setDrawDeckVisibility(newValue);
 
-        player.doneChallenge(true);
-        if(otherPlayer) {
-            otherPlayer.currentChallenge = player.currentChallenge;
-        }
-
-        this.doStealth(player);
-    }
-
-    doneDefend(playerId) {
-        var player = this.getPlayerById(playerId);
-        if(!player) {
-            return;
-        }
-
-        player.doneChallenge(false);
-
-        this.addMessage('{0} has defended with strength {1}', player, player.challengeStrength);
-
-        var challenger = _.find(this.getPlayers(), p => {
-            return p.id !== player.id;
-        });
-
-        var winner = undefined;
-        var loser = undefined;
-
-        if(challenger) {
-            if(challenger.challengeStrength >= player.challengeStrength) {
-                loser = player;
-                winner = challenger;
+            if(newValue) {
+                this.addAlert('danger', '{0} is looking at their deck', player);
             } else {
-                loser = challenger;
-                winner = player;
-            }
-
-            winner.challenges[winner.currentChallenge].won++;
-
-            this.addMessage('{0} won a {1} challenge {2} vs {3}',
-                winner, winner.currentChallenge, winner.challengeStrength, loser.challengeStrength);
-
-            this.emit('afterChallenge', winner.currentChallenge, winner, loser);
-
-            if(loser.challengeStrength === 0) {
-                this.addMessage('{0} has gained 1 power from an unopposed challenge', winner);
-                this.addPower(winner, 1);
-
-                this.emit('onUnopposedWin', winner);
-            }
-
-            // XXX This should be after claim but needs a bit of reworking to make that possible
-            this.applyKeywords(winner, loser);
-
-            if(winner === challenger) {
-                this.applyClaim(winner, loser);
-            } else {
-                challenger.beginChallenge();
-
-                player.menuTitle = 'Waiting for opponent to initiate challenge';
-                player.buttons = [];
+                this.addAlert('info', '{0} stops looking at their deck', player);
             }
         }
+    }
+
+    drop(playerName, cardId, source, target) {
+        let player = this.getPlayerByName(playerName);
+        let card = this.allCards.find(card => card.uuid === cardId);
+
+        if(!player || !card) {
+            return;
+        }
+
+        let command = new DropCommand(this, player, card, target);
+        command.execute();
     }
 
     addPower(player, power) {
-        player.power += power;
-
-        if(player.power < 0) {
-            player.power = 0;
+        if(!player.faction.allowGameAction('gainPower')) {
+            this.addMessage('{0} is unable to gain power for their faction', player);
+            return;
         }
 
-        this.checkWinCondition(player);
+        player.faction.modifyPower(power);
     }
 
-    transferPower(winner, loser, power) {
-        var appliedPower = Math.min(loser.power, power);
-        loser.power -= appliedPower;
-        winner.power += appliedPower;
+    addGold(player, amount) {
+        if(amount <= 0) { // negative should never happen; nothing to do for 0
+            return 0;
+        }
+        if(!player.canGainGold()) {
+            this.addMessage('{0} cannot gain gold', player);
+            return 0;
+        }
 
-        this.checkWinCondition(winner);
+        if(player.maxGoldGain.getMax() !== undefined) {
+            amount = Math.min(amount, player.maxGoldGain.getMax() - player.gainedGold);
+        }
+        player.gainedGold += amount;
+
+        return player.modifyGold(amount);
+    }
+
+    movePower(fromCard, toCard, power) {
+        if(power < 1) {
+            return;
+        }
+
+        this.applyGameAction('movePower', fromCard, fromCard => {
+            let appliedPower = Math.min(fromCard.power, power);
+            fromCard.power -= appliedPower;
+            toCard.power += appliedPower;
+
+            this.raiseEvent('onCardPowerMoved', { source: fromCard, target: toCard, power: appliedPower });
+
+            this.checkWinCondition(toCard.controller);
+        });
+    }
+
+    /**
+     * Spends a specified amount of gold for a player. "Spend" refers to any
+     * usage of gold that returns gold to the treasury as part of an ability
+     * cost, or gold that has been moved from a player's gold pool to a card.
+     *
+     * @param {Object} spendParams
+     * @param {number} spendParams.amount
+     * The amount of gold being spent
+     * @param {Player} spendParams.player
+     * The player whose gold is being spent
+     * @param {string} spendParams.playingType
+     * The type of usage for the gold (e.g. 'marshal', 'ambush', 'ability', etc)
+     * @param {Function} callback
+     * Optional callback that will be called after the gold has been spent
+     */
+    spendGold(spendParams, callback = () => true) {
+        let activePlayer = spendParams.activePlayer || this.currentAbilityContext && this.currentAbilityContext.player;
+        spendParams = Object.assign({ playingType: 'ability', activePlayer: activePlayer }, spendParams);
+
+        this.queueStep(new ChooseGoldSourceAmounts(this, spendParams, callback));
+    }
+
+    /**
+     * Transfers gold from one gold source to another. Both the source and the
+     * target for the transfer can be either a card or a player.
+     *
+     * @param {Object} transferParams
+     * @param {number} transferParams.amount
+     * The amount of gold being moved
+     * @param {(BaseCard|Player)} transferParams.from
+     * The source object from which gold is being moved
+     * @param {(BaseCard|Player)} transferParams.to
+     * The target object to which gold is being moved
+     */
+    transferGold(transferParams) {
+        let { from, to, amount } = transferParams;
+        let appliedGold = Math.min(from.gold, amount);
+
+        if(from.getGameElementType() === 'player') {
+            let activePlayer = transferParams.activePlayer || this.currentAbilityContext && this.currentAbilityContext.player;
+            appliedGold = Math.min(from.getSpendableGold({ player: from, activePlayer: activePlayer }), amount);
+            this.spendGold({ amount: appliedGold, player: from, activePlayer: activePlayer }, () => {
+                to.modifyGold(appliedGold);
+                this.raiseEvent('onGoldTransferred', { source: from, target: to, amount: appliedGold });
+            });
+            return;
+        }
+
+        from.modifyGold(-appliedGold);
+        to.modifyGold(appliedGold);
+
+        this.raiseEvent('onGoldTransferred', { source: from, target: to, amount: appliedGold });
+    }
+
+    /**
+     * Returns the specified amount of gold from a player to the treasury.
+     *
+     * @param {Object} params
+     * @param {Player} params.player The player whose gold pool will be deducted
+     * @param {number} params.amount The amount of gold being returned
+     */
+    returnGoldToTreasury(params) {
+        let { player, amount } = params;
+        let appliedAmount = Math.min(player.gold, amount);
+
+        player.modifyGold(-appliedAmount);
     }
 
     checkWinCondition(player) {
-        if(player.getTotalPower() >= 15) {
-            this.addMessage('{0} has won the game', player);
+        if(player.getTotalPower() >= 15 && player.canWinGame()) {
+            this.recordWinner(player, 'power');
         }
     }
 
-    applyKeywords(winner, loser) {
-        winner.cardsInChallenge.each(card => {
-            if(card.hasKeyword('Insight')) {
-                winner.drawCardsToHand(1);
-
-                this.addMessage('{0} draws a card from Insight on {1}', winner, card);
-            }
-
-            if(card.hasKeyword('Intimidate')) {
-                // something
-            }
-
-            if(card.hasKeyword('Pillage')) {
-                loser.discardFromDraw(1);
-
-                this.addMessage('{0} discards a card from the top of their deck from Pillage on {1}', loser, card);
-            }
-
-            if(card.hasKeyword('Renown')) {
-                card.power++;
-
-                this.addMessage('{0} gains 1 power on {1} from Renown', winner, card);
-            }
-
-            this.checkWinCondition(winner);
-        });
-    }
-
-    applyClaim(winner, loser) {
-        this.emit('beforeClaim', this, winner.currentChallenge, winner, loser);
-        var claim = winner.activePlot.getClaim();
-        claim = winner.modifyClaim(winner, winner.currentChallenge, claim);
-
-        if(loser) {
-            claim = loser.modifyClaim(winner, winner.currentChallenge, claim);
+    checkPlayerElimination() {
+        if(this.currentPhase === 'setup') {
+            return;
         }
 
-        if(claim <= 0) {
-            this.addMessage('The claim value for {0} is 0, no claim occurs', winner.currentChallenge);
+        let players = this.getPlayers();
+        let deckedPlayers = players.filter(player => player.drawDeck.length === 0 && !player.lost);
+
+        // TODO: When all remaining players are decked simultaneously, first
+        // player chooses the winner.
+        for(let player of deckedPlayers) {
+            this.addAlert('info', '{0} loses the game because their draw deck is empty', player);
+            player.lost = true;
+        }
+
+        let remainingPlayers = players.filter(player => !player.lost);
+
+        if(remainingPlayers.length === 1) {
+            let lastPlayer = remainingPlayers[0];
+
+            if(lastPlayer.canWinGame()) {
+                this.recordWinner(lastPlayer, 'decked');
+            } else {
+                this.recordDraw(lastPlayer);
+            }
+        }
+    }
+
+    recordDraw(lastPlayer) {
+        if(this.winner) {
+            return;
+        }
+
+        this.addAlert('info', 'The game ends in a draw because {0} cannot win the game', lastPlayer);
+        this.winner = { name: 'DRAW' };
+        this.finishedAt = new Date();
+        this.winReason = 'draw';
+
+        this.router.gameWon(this, this.winReason, this.winner);
+    }
+
+    recordWinner(winner, reason) {
+        if(this.winner) {
+            return;
+        }
+
+        this.addAlert('success', '{0} has won the game', winner);
+
+        this.winner = winner;
+        this.finishedAt = new Date();
+        this.winReason = reason;
+
+        this.router.gameWon(this, reason, winner);
+    }
+
+    changeStat(playerName, stat, value) {
+        let player = this.getPlayerByName(playerName);
+        if(!player) {
+            return;
+        }
+
+        let target = player;
+
+        if(stat === 'power') {
+            target = player.faction;
+        } else if(stat === 'reserve' || stat === 'claim') {
+            if(!player.activePlot) {
+                return;
+            }
+
+            target = player.activePlot.cardData.plotStats;
+        }
+
+        // Ensure that manually setting reserve isn't limited by any min reserve effects
+        if(stat === 'reserve') {
+            player.minReserve = 0;
+        }
+
+        if(stat === 'claim' && _.isNumber(player.activePlot.claimSet)) {
+            player.activePlot.claimSet += value;
+
+            if(player.activePlot.claimSet < 0) {
+                player.activePlot.claimSet = 0;
+            } else {
+                this.addAlert('danger', '{0} changes the set claim value to be {1} ({2})', player, player.activePlot.claimSet, (value > 0 ? '+' : '') + value);
+            }
+            return;
+        }
+
+        target[stat] += value;
+
+        if(target[stat] < 0) {
+            target[stat] = 0;
         } else {
-            if(winner.currentChallenge === 'military') {
-                winner.menuTitle = 'Waiting for opponent to apply claim effects';
-                winner.buttons = [];
+            this.addAlert('danger', '{0} sets {1} to {2} ({3})', player, stat, target[stat], (value > 0 ? '+' : '') + value);
+        }
+    }
 
-                loser.claimToDo = claim;
-                loser.selectCharacterToKill();
+    chat(playerName, message) {
+        var player = this.playersAndSpectators[playerName];
+        var args = message.split(' ');
+
+        if(!player) {
+            return;
+        }
+
+        if(!player.isSpectator()) {
+            if(this.chatCommands.executeCommand(player, args[0], args)) {
+                return;
+            }
+
+            let card = Object.values(this.cardData).find(c => {
+                return c.label.toLowerCase() === message.toLowerCase() || c.name.toLowerCase() === message.toLowerCase();
+            });
+
+            if(card) {
+                this.gameChat.addChatMessage('{0} {1}', player, card);
 
                 return;
-            } else if(winner.currentChallenge === 'intrigue') {
-                loser.discardAtRandom(claim);
-            } else if(winner.currentChallenge === 'power') {
-                this.transferPower(winner, loser, claim);
             }
         }
 
-        this.emit('afterClaim', this, winner.currentChallenge, winner, loser);
-        loser.doneClaim();
-        winner.beginChallenge();
+        this.gameChat.addChatMessage('{0} {1}', player, message);
     }
 
-    doneChallenges(playerId) {
-        var challenger = this.getPlayerById(playerId);
-        if(!challenger) {
-            return;
-        }
-
-        challenger.doneChallenges = true;
-
-        var other = _.find(this.getPlayers(), p => {
-            return !p.doneChallenges;
-        });
-
-        if(other) {
-            other.beginChallenge();
-
-            challenger.menuTitle = 'Waiting for opponent to initiate challenge';
-            challenger.buttons = [];
-        } else {
-            this.dominance();
-        }
-    }
-
-    dominance() {
-        var highestDominance = 0;
-        var lowestDominance = 0;
-        var dominanceWinner = undefined;
-
-        _.each(this.getPlayers(), player => {
-            player.phase = 'dominance';
-            var dominance = player.getDominance();
-
-            lowestDominance = dominance;
-
-            if(dominance === highestDominance) {
-                dominanceWinner = undefined;
-            }
-
-            if(dominance > highestDominance) {
-                lowestDominance = highestDominance;
-                highestDominance = dominance;
-                dominanceWinner = player;
-            } else {
-                lowestDominance = dominance;
-            }
-        });
-
-        if(dominanceWinner) {
-            this.addMessage('{0} wins dominance ({1} vs {2})', dominanceWinner, highestDominance, lowestDominance);
-
-            this.addPower(dominanceWinner, 1);
-        } else {
-            this.addMessage('There was a tie for dominance');
-            this.addMessage('No one wins dominance');
-        }
-
-        this.emit('afterDominance', dominanceWinner);
-
-        this.emit('cardsStanding', this);
-
-        _.each(this.getPlayers(), player => {
-            player.standCards();
-            player.taxation();
-        });
-
-        var firstPlayer = this.getFirstPlayer();
-
-        firstPlayer.menuTitle = '';
-        firstPlayer.buttons = [
-            { command: 'doneround', text: 'End Round' }
-        ];
-
-        var otherPlayer = this.getOtherPlayer(firstPlayer);
-
-        if(otherPlayer) {
-            otherPlayer.menuTitle = 'Waiting for opponent to end the round';
-            otherPlayer.buttons = [];
-        }
-    }
-
-    doneRound(playerId) {
-        var player = this.getPlayerById(playerId);
-
-        if(!player || player.hand.size() > player.reserve) {
-            return;
-        }
-
-        var otherPlayer = this.getOtherPlayer(player);
-
-        if(!otherPlayer) {
-            player.startPlotPhase();
-
-            return;
-        }
-
-        if(otherPlayer && otherPlayer.roundDone) {
-            player.startPlotPhase();
-            otherPlayer.startPlotPhase();
-
-            return;
-        }
-
-        player.roundDone = true;
-        player.menuTitle = 'Waiting for opponent to end the round';
-        player.buttons = [];
-
-        if(otherPlayer) {
-            otherPlayer.menuTitle = '';
-            otherPlayer.buttons = [
-                { command: 'doneround', text: 'End Round' }
-            ];
-        }
-    }
-
-    changeStat(playerId, stat, value) {
-        var player = this.getPlayerById(playerId);
-        if(!player) {
-            return;
-        }
-
-        player[stat] += value;
-
-        if(player[stat] < 0) {
-            player[stat] = 0;
-        } else {
-            this.addMessage('{0} sets {1} to {2} ({3})', player, stat, player[stat], (value > 0 ? '+' : '') + value);
-        }
-    }
-
-    customCommand(playerId, arg) {
-        var player = this.getPlayerById(playerId);
-        if(!player) {
-            return;
-        }
-
-        this.emit('customCommand', this, player, arg);
-    }
-
-    getNumberOrDefault(string, defaultNumber) {
-        var num = parseInt(string);
-
-        if(isNaN(num)) {
-            num = defaultNumber;
-        }
-
-        if(num < 0) {
-            num = defaultNumber;
-        }
-
-        return num;
-    }
-
-    chat(playerId, message) {
-        var player = this.players[playerId];
-        var args = message.split(' ');
-        var num = 1;
+    concede(playerName) {
+        var player = this.getPlayerByName(playerName);
 
         if(!player) {
             return;
         }
 
-        if(this.isSpectator(player)) {
-            this.addMessage('<{0}> {1}', player, message);
-            return;
-        }
+        this.addAlert('info', '{0} concedes', player);
+        player.lost = true;
 
-        if(message.indexOf('/draw') === 0) {
-            if(args.length > 1) {
-                num = this.getNumberOrDefault(args[1], 1);
-            }
+        let remainingPlayers = this.getPlayers().filter(player => !player.lost);
 
-            this.addMessage('{0} uses the /draw command to draw {1} cards to their hand', player, num);
-
-            player.drawCardsToHand(num);
-
-            return;
-        }
-
-        if(message.indexOf('/power') === 0) {
-            if(args.length > 1) {
-                num = this.getNumberOrDefault(args[1], 1);
-            }
-
-            var buttons = [
-                { command: 'donesetpower', text: 'Done' }
-            ];
-
-            player.setPower = num;
-
-            this.promptForSelect(player, this.setPower.bind(this), 'Select a card to set power for', buttons);
-
-            return;
-        }
-
-        if(message.indexOf('/discard') === 0) {
-            if(args.length > 1) {
-                num = this.getNumberOrDefault(args[1], 1);
-            }
-
-            this.addMessage('{0} uses the /discard command to discard {1} cards at random', player, num);
-
-            player.discardAtRandom(num);
-
-            return;
-        }
-
-        if(message.indexOf('/pillage') === 0) {
-            this.addMessage('{0} uses the /pillage command to discard a card from the top of their draw deck', player);
-
-            player.discardFromDraw(1);
-
-            return;
-        }
-
-        if(message.indexOf('/strength') === 0 || message.indexOf('/str') === 0) {
-            if(args.length > 1) {
-                num = this.getNumberOrDefault(args[1], 1);
-            }
-
-            buttons = [
-                { command: 'donesetstrength', text: 'Done' }
-            ];
-            player.setStrength = num;
-
-            this.promptForSelect(player, this.setStrength.bind(this), 'Select a card to set strength for', buttons);
-
-            return;
-        }
-
-        this.addMessage('<{0}> {1}', player, message);
-    }
-
-    setStrength(player, cardId) {
-        var card = player.findCardInPlayByUuid(cardId);
-
-        if(!card || card.getType() !== 'character' || _.isUndefined(player.setStrength)) {
-            return false;
-        }
-
-        card.strengthModifier = player.setStrength - card.cardData.strength;
-
-        this.addMessage('{0} uses the /strength command to set the strength of {1} to {2}', player, card, player.setStrength);
-        this.doneSetStrength(player.id);
-
-        return true;
-    }
-
-    setPower(player, cardId) {
-        var card = player.findCardInPlayByUuid(cardId);
-
-        if(!card || _.isUndefined(player.setPower)) {
-            return false;
-        }
-
-        card.power = player.setPower;
-
-        this.addMessage('{0} uses the /power command to set the power of {1} to {2}', player, card, player.setPower);
-        this.doneSetPower(player.id);
-
-        return true;
-    }
-
-    doneSetPower(playerId) {
-        var player = this.getPlayerById(playerId);
-        if(!player) {
-            return;
-        }
-
-        this.cancelSelect(player);
-
-        player.setPower = undefined;
-    }
-
-    doneSetStrength(playerId) {
-        var player = this.getPlayerById(playerId);
-        if(!player) {
-            return;
-        }
-
-        this.cancelSelect(player);
-
-        player.setStrength = undefined;
-    }
-
-    doneAttachment(playerId) {
-        var player = this.getPlayerById(playerId);
-        if(!player) {
-            return;
-        }
-
-        this.cancelSelect(player);
-
-        this.selectedAttachment = undefined;
-    }
-
-    playerLeave(playerId, reason) {
-        var player = this.players[playerId];
-
-        if(!player) {
-            return;
-        }
-
-        this.addMessage('{0} {1}', player, reason);
-    }
-
-    concede(playerId) {
-        var player = this.getPlayerById(playerId);
-
-        if(!player) {
-            return;
-        }
-
-        this.addMessage('{0} concedes', player);
-
-        var otherPlayer = this.getOtherPlayer(player);
-
-        if(otherPlayer) {
-            this.addMessage('{0} wins the game', otherPlayer);
+        if(remainingPlayers.length === 1) {
+            this.recordWinner(remainingPlayers[0], 'concede');
         }
     }
 
-    selectDeck(playerId, deck) {
-        var player = this.getPlayerById(playerId);
+    selectDeck(playerName, deck) {
+        var player = this.getPlayerByName(playerName);
 
         if(!player) {
             return;
@@ -1255,160 +629,608 @@ class Game extends EventEmitter {
         player.selectDeck(deck);
     }
 
-    doneStealth(playerId) {
-        var player = this.getPlayerById(playerId);
-
+    shuffleDeck(playerName) {
+        var player = this.getPlayerByName(playerName);
         if(!player) {
             return;
         }
 
-        var otherPlayer = this.getOtherPlayer(player);
+        this.addAlert('danger', '{0} shuffles their deck', player);
 
-        if(otherPlayer) {
-            player.menuTitle = 'Waiting for opponent to defend';
-            player.buttons = [];
-            player.selectCard = false;
+        player.shuffleDrawDeck();
+    }
 
-            otherPlayer.beginDefend(player.currentChallenge);
+    promptWithMenu(player, contextObj, properties) {
+        this.queueStep(new MenuPrompt(this, player, contextObj, properties));
+    }
+
+    promptForIcon(player, card, callback = () => true) {
+        this.queueStep(new IconPrompt(this, player, card, callback));
+    }
+
+    promptForSelect(player, properties) {
+        this.queueStep(new SelectCardPrompt(this, player, properties));
+    }
+
+    promptForDeckSearch(player, properties) {
+        this.raiseEvent('onBeforeDeckSearch', { source: properties.source, player: player }, event => {
+            this.queueStep(new DeckSearchPrompt(this, event.player, properties));
+        });
+    }
+
+    promptForOpponentChoice(player, properties) {
+        this.queueStep(new ChooseOpponentPrompt(this, player, properties));
+    }
+
+    menuButton(playerName, arg, method) {
+        var player = this.getPlayerByName(playerName);
+        if(!player) {
+            return;
+        }
+
+        if(this.pipeline.handleMenuCommand(player, arg, method)) {
+            return true;
+        }
+    }
+
+    togglePromptedActionWindow(playerName, windowName, toggle) {
+        var player = this.getPlayerByName(playerName);
+        if(!player) {
+            return;
+        }
+
+        player.promptedActionWindows[windowName] = toggle;
+    }
+
+    toggleTimerSetting(playerName, settingName, toggle) {
+        var player = this.getPlayerByName(playerName);
+        if(!player) {
+            return;
+        }
+
+        player.timerSettings[settingName] = toggle;
+    }
+
+    toggleKeywordSetting(playerName, settingName, toggle) {
+        var player = this.getPlayerByName(playerName);
+        if(!player) {
+            return;
+        }
+
+        player.keywordSettings[settingName] = toggle;
+    }
+
+    toggleDupes(playerName, toggle) {
+        var player = this.getPlayerByName(playerName);
+        if(!player) {
+            return;
+        }
+
+        player.promptDupes = toggle;
+    }
+
+    initialise() {
+        var players = {};
+
+        _.each(this.playersAndSpectators, player => {
+            if(!player.left) {
+                players[player.name] = player;
+            }
+        });
+
+        this.playersAndSpectators = players;
+
+        _.each(this.getPlayers(), player => {
+            player.initialise();
+        });
+
+        this.pipeline.initialise([
+            Phases.createStep('setup', this),
+            new SimpleStep(this, () => this.beginRound())
+        ]);
+
+        this.playStarted = true;
+        this.startedAt = new Date();
+
+        this.round = 0;
+
+        this.continue();
+    }
+
+    gatherAllCards() {
+        let playerCards = this.getPlayers().reduce((cards, player) => {
+            return cards.concat(player.preparedDeck.allCards);
+        }, []);
+
+        if(this.isMelee) {
+            this.allCards = this.titlePool.cards.concat(playerCards);
+        } else {
+            this.allCards = playerCards;
+        }
+    }
+
+    beginRound() {
+        // Reset phases to the standard game flow.
+        this.remainingPhases = Phases.names();
+        this.raiseEvent('onBeginRound');
+        this.queueSimpleStep(() => {
+            // Loop through individual phases, queuing them one at a time. This
+            // will allow additional phases to be added.
+            if(this.remainingPhases.length !== 0) {
+                let phase = this.remainingPhases.shift();
+                this.queueStep(Phases.createStep(phase, this));
+                return false;
+            }
+        });
+        this.queueStep(new SimpleStep(this, () => this.beginRound()));
+    }
+
+    addPhase(phase) {
+        this.remainingPhases.unshift(phase);
+    }
+
+    queueStep(step) {
+        this.pipeline.queueStep(step);
+    }
+
+    queueSimpleStep(handler) {
+        this.pipeline.queueStep(new SimpleStep(this, handler));
+    }
+
+    markActionAsTaken(context) {
+        if(this.currentActionWindow) {
+            this.currentActionWindow.markActionAsTaken();
+        } else if(this.currentPhase !== 'marshal' || this.hasOpenInterruptOrReactionWindow()) {
+            this.addAlert('danger', '{0} uses {1} outside of an action window', context.player, context.source);
+        }
+    }
+
+    get currentAbilityContext() {
+        return _.last(this.abilityContextStack);
+    }
+
+    pushAbilityContext(context) {
+        this.abilityContextStack.push(context);
+    }
+
+    popAbilityContext() {
+        this.abilityContextStack.pop();
+    }
+
+    resolveAbility(ability, context) {
+        this.queueStep(new AbilityResolver(this, ability, context));
+    }
+
+    openAbilityWindow(properties) {
+        let windowClass = ['forcedreaction', 'forcedinterrupt', 'whenrevealed'].includes(properties.abilityType) ? ForcedTriggeredAbilityWindow : TriggeredAbilityWindow;
+        let window = new windowClass(this, { abilityType: properties.abilityType, event: properties.event });
+        this.abilityWindowStack.push(window);
+        this.queueStep(window);
+        this.queueSimpleStep(() => this.abilityWindowStack.pop());
+    }
+
+    openInterruptWindowForAttachedEvents(event) {
+        let attachedEvents = [];
+        for(let concurrentEvent of event.getConcurrentEvents()) {
+            attachedEvents = attachedEvents.concat(concurrentEvent.attachedEvents);
+            concurrentEvent.clearAttachedEvents();
+        }
+
+        if(attachedEvents.length === 0) {
+            return;
+        }
+
+        let groupedEvent = new SimultaneousEvents();
+        for(let attachedEvent of attachedEvents) {
+            groupedEvent.addChildEvent(attachedEvent);
+        }
+
+        this.queueStep(new InterruptWindow(this, groupedEvent, () => this.postEventCalculations()));
+    }
+
+    registerAbility(ability, event) {
+        let windowIndex = _.findLastIndex(this.abilityWindowStack, window => window.canTriggerAbility(ability));
+
+        if(windowIndex === -1) {
+            return;
+        }
+
+        let window = this.abilityWindowStack[windowIndex];
+        window.registerAbility(ability, event);
+    }
+
+    clearAbilityResolution(ability) {
+        for(let window of this.abilityWindowStack) {
+            window.clearAbilityResolution(ability);
+        }
+    }
+
+    hasOpenInterruptOrReactionWindow() {
+        return this.abilityWindowStack.length !== 0;
+    }
+
+    raiseEvent(eventName, params, handler) {
+        if(!handler) {
+            handler = () => true;
+        }
+        let event = new Event(eventName, params, handler);
+
+        this.queueStep(new EventWindow(this, event, () => this.postEventCalculations()));
+    }
+
+    /**
+     * Raises multiple events whose resolution is performed atomically. Any
+     * abilities triggered by these events will appear within the same prompt
+     * for the player.
+     */
+    raiseAtomicEvent(events) {
+        let event = new AtomicEvent();
+        for(let childEventProperties of events) {
+            let childEvent = new Event(childEventProperties.name, childEventProperties.params, childEventProperties.handler);
+            event.addChildEvent(childEvent);
+        }
+        this.queueStep(new EventWindow(this, event, () => this.postEventCalculations()));
+    }
+
+    /**
+     * Raises the same event across multiple cards as well as a wrapping plural
+     * version of the event that lists all cards.
+     */
+    raiseSimultaneousEvent(cards, properties) {
+        let event = new GroupedCardEvent(properties.eventName, _.extend({ cards: cards }, properties.params), properties.handler, properties.postHandler);
+        for(let card of cards) {
+            let perCardParams = _.extend({ card: card }, properties.params);
+            let childEvent = new Event(properties.perCardEventName, perCardParams, properties.perCardHandler);
+            event.addChildEvent(childEvent);
+        }
+
+        this.queueStep(new EventWindow(this, event, () => this.postEventCalculations()));
+    }
+
+    resolveEvent(event) {
+        this.queueStep(new EventWindow(this, event, () => this.postEventCalculations()));
+    }
+
+    /**
+     * Function that executes after the handler for each Event has executed. In
+     * terms of overall engine it is useful for things that require regular
+     * checks, such as state dependent effects, attachment validity, and others.
+     */
+    postEventCalculations() {
+        this.effectEngine.recalculateDirtyTargets();
+        this.effectEngine.reapplyStateDependentEffects();
+        this.attachmentValidityCheck.enforceValidity();
+        this.checkPlayerElimination();
+    }
+
+    isPhaseSkipped(name) {
+        return !!this.skipPhase[name];
+    }
+
+    saveWithDupe(card) {
+        if(card.owner.promptDupes) {
+            return;
+        }
+
+        let player = card.controller;
+        let dupe = card.dupes.find(dupe => dupe.owner === card.controller);
+        if(card.canBeSaved() && dupe) {
+            dupe.owner.discardCard(dupe, false);
+            this.saveCard(card);
+            this.addMessage('{0} discards a duplicate to save {1}', player, card);
+            return true;
         }
 
         return false;
     }
 
-    cancelClaim(playerId) {
-        var player = this.getPlayerById(playerId);
+    saveCard(card) {
+        card.markAsSaved();
+        this.raiseEvent('onCardSaved', { card: card });
+    }
 
-        if(!player) {
+    discardFromPlay(cards, options = { allowSave: true }, callback = () => true) {
+        let inPlayCards = cards.filter(card => card.location === 'play area');
+        if(inPlayCards.length === 0) {
             return;
         }
 
-        this.addMessage('{0} has cancelled claim effects', player);
-
-        player.doneClaim();
-
-        var otherPlayer = this.getOtherPlayer(player);
-
-        if(otherPlayer) {
-            otherPlayer.beginChallenge();
-        }
+        // The player object used is irrelevant - it shouldn't be referenced by
+        // any abilities that respond to cards being discarded from play. This
+        // should be a temporary workaround until better support is added for
+        // simultaneous resolution of events.
+        inPlayCards[0].owner.discardCards(inPlayCards, options.allowSave, callback, options);
     }
 
-    shuffleDeck(playerId) {
-        var player = this.getPlayerById(playerId);
-        if(!player) {
-            return;
-        }
-
-        this.addMessage('{0} shuffles their deck', player);
-
-        player.shuffleDrawDeck();
+    killCharacters(cards, options = {}) {
+        options = Object.assign({ allowSave: true, isBurn: false }, options);
+        this.queueStep(new KillCharacters(this, cards, options));
     }
 
-    plotCardCommand(playerId, method, arg) {
-        var player = this.getPlayerById(playerId);
-        if(!player) {
-            return;
-        }
-
-        if(player.activePlot && player.activePlot[method]) {
-            player.activePlot[method](player, arg);
-        }
-
-        var otherPlayer = this.getOtherPlayer(player);
-        if(otherPlayer && otherPlayer.activePlot && otherPlayer.activePlot[method]) {
-            otherPlayer.activePlot[method](player, arg);
-        }
+    killCharacter(card, options = {}) {
+        this.killCharacters([card], options);
     }
 
-    promptForSelect(player, callback, menuTitle, buttons, multiSelect) {
-        player.selectCard = true;
-
-        this.selectPlayer = player;
-        this.selectCallback = callback;
-
-        player.oldMenuTitle = player.menuTitle;
-        player.oldButtons = player.buttons;
-
-        player.menuTitle = menuTitle;
-        player.buttons = buttons;
-
-        this.multiSelect = multiSelect;
-    }
-
-    cancelSelect(player) {
-        player.selectCard = false;
-
-        this.selectPlayer = undefined;
-        this.selectCallback = undefined;
-
-        player.menuTitle = player.oldMenuTitle;
-        player.buttons = player.oldButtons;
-
-    }
-
-    initialise() {
-        this.playStarted = false;
-        this.messages = [];
-        _.each(this.getPlayers(), player => {
-            player.initialise();
+    placeOnBottomOfDeck(card, options = { allowSave: true }) {
+        this.applyGameAction('placeOnBottomOfDeck', card, card => {
+            card.owner.moveCard(card, 'draw deck', { allowSave: options.allowSave, bottom: true });
         });
     }
 
-    getState(activePlayer) {
-        var playerState = {};
+    takeControl(player, card, source = null) {
+        var oldController = card.controller;
+        var newController = player;
+
+        if(oldController === newController) {
+            return;
+        }
+
+        if(card.location !== 'play area' && !newController.canPutIntoPlay(card)) {
+            return;
+        }
+
+        if(card.location === 'play area' && !newController.canControl(card)) {
+            return;
+        }
+
+        this.applyGameAction('takeControl', card, card => {
+            oldController.removeCardFromPile(card);
+            card.takeControl(newController, source);
+            newController.cardsInPlay.push(card);
+
+            if(card.location !== 'play area') {
+                let originalLocation = card.location;
+                card.moveTo('play area');
+                card.applyPersistentEffects();
+                this.raiseEvent('onCardEntersPlay', { card: card, playingType: 'play', originalLocation: originalLocation });
+            }
+
+            this.raiseEvent('onCardTakenControl', { card: card });
+            this.checkWinCondition(player);
+        });
+    }
+
+    revertControl(card, source) {
+        if(card.location !== 'play area') {
+            return;
+        }
+
+        card.controller.removeCardFromPile(card);
+        card.revertControl(source);
+        card.controller.cardsInPlay.push(card);
+        this.raiseEvent('onCardTakenControl', { card: card });
+        this.checkWinCondition(card.controller);
+    }
+
+    applyGameAction(actionType, cards, func, options = {}) {
+        let wasArray = Array.isArray(cards);
+        if(!wasArray) {
+            cards = [cards];
+        }
+        let allowed = options.force ? cards : cards.filter(card => card.allowGameAction(actionType));
+
+        if(allowed.length === 0) {
+            return;
+        }
+
+        if(wasArray) {
+            func(allowed);
+        } else {
+            func(allowed[0]);
+        }
+    }
+
+    watch(socketId, user) {
+        if(!this.allowSpectators) {
+            return false;
+        }
+
+        this.playersAndSpectators[user.username] = new Spectator(socketId, user);
+        this.addAlert('info', '{0} has joined the game as a spectator', user.username);
+
+        return true;
+    }
+
+    join(socketId, user) {
+        if(this.started || _.values(this.getPlayers()).length === 2) {
+            return false;
+        }
+
+        this.playersAndSpectators[user.username] = new Player(socketId, user, this.owner === user.username, this);
+
+        return true;
+    }
+
+    isEmpty() {
+        return _.all(this.playersAndSpectators, player => player.disconnected || player.left || player.id === 'TBA');
+    }
+
+    leave(playerName) {
+        var player = this.playersAndSpectators[playerName];
+
+        if(!player) {
+            return;
+        }
+
+        this.addAlert('info', '{0} has left the game', player);
+
+        if(player.isSpectator() || !this.started) {
+            delete this.playersAndSpectators[playerName];
+        } else {
+            player.left = true;
+
+            if(!this.finishedAt) {
+                this.finishedAt = new Date();
+            }
+        }
+    }
+
+    disconnect(playerName) {
+        var player = this.playersAndSpectators[playerName];
+
+        if(!player) {
+            return;
+        }
+
+        this.addAlert('warning', '{0} has disconnected', player);
+
+        if(player.isSpectator()) {
+            delete this.playersAndSpectators[playerName];
+        } else {
+            player.disconnected = true;
+        }
+
+        player.socket = undefined;
+    }
+
+    failedConnect(playerName) {
+        var player = this.playersAndSpectators[playerName];
+
+        if(!player || player.connectionSucceeded) {
+            return;
+        }
+
+        if(player.isSpectator() || !this.started) {
+            delete this.playersAndSpectators[playerName];
+        } else {
+            this.addAlert('danger', '{0} has failed to connect to the game', player);
+
+            player.disconnected = true;
+
+            if(!this.finishedAt) {
+                this.finishedAt = new Date();
+            }
+        }
+    }
+
+    reconnect(socket, playerName) {
+        var player = this.getPlayerByName(playerName);
+        if(!player) {
+            return;
+        }
+
+        player.id = socket.id;
+        player.socket = socket;
+        player.disconnected = false;
+
+        this.addAlert('info', '{0} has reconnected', player);
+    }
+
+    activatePersistentEffects() {
+        this.effectEngine.activatePersistentEffects();
+    }
+
+    continue() {
+        this.pipeline.continue();
+    }
+
+    getGameElementType() {
+        return 'game';
+    }
+
+    getSaveState() {
+        var players = _.map(this.getPlayers(), player => {
+            return {
+                name: player.name,
+                faction: player.faction.name || player.faction.value,
+                agenda: player.agenda ? player.agenda.name : undefined,
+                power: player.getTotalPower()
+            };
+        });
+
+        return {
+            id: this.savedGameId,
+            gameId: this.id,
+            startedAt: this.startedAt,
+            players: players,
+            winner: this.winner ? this.winner.name : undefined,
+            winReason: this.winReason,
+            finishedAt: this.finishedAt
+        };
+    }
+
+    getState(activePlayerName) {
+        let activePlayer = this.playersAndSpectators[activePlayerName] || new AnonymousSpectator();
+        let playerState = {};
 
         if(this.started) {
             _.each(this.getPlayers(), player => {
-                playerState[player.id] = player.getState(activePlayer === player.id);
+                playerState[player.name] = player.getState(activePlayer);
             });
 
             return {
                 id: this.id,
+                isMelee: this.isMelee,
                 name: this.name,
                 owner: this.owner,
                 players: playerState,
-                messages: this.messages,
+                messages: this.gameChat.messages,
+                showHand: this.showHand,
                 spectators: _.map(this.getSpectators(), spectator => {
                     return {
                         id: spectator.id,
                         name: spectator.name
                     };
                 }),
-                started: this.started
+                started: this.started,
+                winner: this.winner ? this.winner.name : undefined,
+                cancelPromptUsed: this.cancelPromptUsed
             };
         }
 
-        return this.getSummary(activePlayer);
+        return this.getSummary(activePlayerName);
     }
 
-    getSummary(activePlayer) {
-        var playerSummaries = [];
+    getSummary(activePlayerName, options = {}) {
+        var playerSummaries = {};
 
         _.each(this.getPlayers(), player => {
             var deck = undefined;
+            if(player.left) {
+                return;
+            }
 
-            if(activePlayer === player.id && player.deck) {
-                deck = { name: player.deck.name };
+            if(activePlayerName === player.name && player.deck) {
+                deck = { name: player.deck.name, selected: player.deck.selected };
             } else if(player.deck) {
+                deck = { selected: player.deck.selected };
+            } else {
                 deck = {};
             }
 
-            playerSummaries.push({ id: player.id, name: player.name, deck: deck, owner: player.owner });
+            playerSummaries[player.name] = {
+                agenda: player.agenda ? player.agenda.code : undefined,
+                deck: deck,
+                faction: player.faction.code,
+                id: player.id,
+                lobbyId: player.lobbyId,
+                left: player.left,
+                name: player.name,
+                owner: player.owner,
+                user: options.fullData && player.user
+            };
         });
 
         return {
+            allowSpectators: this.allowSpectators,
+            createdAt: this.createdAt,
+            gameType: this.gameType,
             id: this.id,
+            isMelee: this.isMelee,
+            messages: this.gameChat.messages,
             name: this.name,
             owner: this.owner,
+            players: playerSummaries,
+            showHand: this.showHand,
             started: this.started,
+            startedAt: this.startedAt,
             spectators: _.map(this.getSpectators(), spectator => {
                 return {
                     id: spectator.id,
+                    lobbyId: spectator.lobbyId,
                     name: spectator.name
                 };
-            }),
-            players: playerSummaries,
-            messages: this.messages
+            })
         };
     }
 }

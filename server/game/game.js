@@ -1,5 +1,5 @@
-const _ = require('underscore');
 const EventEmitter = require('events');
+const moment = require('moment');
 
 const AttachmentValidityCheck = require('./AttachmentValidityCheck.js');
 const ChatCommands = require('./chatcommands.js');
@@ -12,7 +12,8 @@ const AnonymousSpectator = require('./anonymousspectator.js');
 const GamePipeline = require('./gamepipeline.js');
 const Phases = require('./gamesteps/Phases');
 const SimpleStep = require('./gamesteps/simplestep.js');
-const ChooseOpponentPrompt = require('./gamesteps/chooseopponentprompt.js');
+const ChoosePlayerPrompt = require('./gamesteps/ChoosePlayerPrompt');
+const CardNamePrompt = require('./gamesteps/CardNamePrompt');
 const DeckSearchPrompt = require('./gamesteps/DeckSearchPrompt');
 const MenuPrompt = require('./gamesteps/menuprompt.js');
 const IconPrompt = require('./gamesteps/iconprompt.js');
@@ -25,12 +26,17 @@ const InterruptWindow = require('./gamesteps/InterruptWindow');
 const KillCharacters = require('./gamesteps/killcharacters.js');
 const TitlePool = require('./TitlePool.js');
 const Event = require('./event.js');
+const NullEvent = require('./NullEvent');
 const AtomicEvent = require('./AtomicEvent.js');
 const GroupedCardEvent = require('./GroupedCardEvent.js');
 const SimultaneousEvents = require('./SimultaneousEvents');
 const ChooseGoldSourceAmounts = require('./gamesteps/ChooseGoldSourceAmounts.js');
 const DropCommand = require('./ServerCommands/DropCommand');
 const CardVisibility = require('./CardVisibility');
+const PlainTextGameChatFormatter = require('./PlainTextGameChatFormatter');
+const GameActions = require('./GameActions');
+const TimeLimit = require('./timeLimit.js');
+const PrizedKeywordListener = require('./PrizedKeywordListener');
 
 class Game extends EventEmitter {
     constructor(details, options = {}) {
@@ -54,6 +60,9 @@ class Game extends EventEmitter {
         this.started = false;
         this.playStarted = false;
         this.createdAt = new Date();
+        this.useGameTimeLimit = details.useGameTimeLimit;
+        this.gameTimeLimit = details.gameTimeLimit;
+        this.timeLimit = new TimeLimit(this);
         this.savedGameId = details.savedGameId;
         this.gameType = details.gameType;
         this.abilityContextStack = [];
@@ -73,14 +82,16 @@ class Game extends EventEmitter {
         this.remainingPhases = [];
         this.skipPhase = {};
         this.cardVisibility = new CardVisibility(this);
+        this.winnerOfDominanceInLastRound = undefined;
+        this.prizedKeywordListener = new PrizedKeywordListener(this);
 
-        _.each(details.players, player => {
+        for(let player of Object.values(details.players || {})) {
             this.playersAndSpectators[player.user.username] = new Player(player.id, player.user, this.owner === player.user.username, this);
-        });
+        }
 
-        _.each(details.spectators, spectator => {
+        for(let spectator of Object.values(details.spectators || {})) {
             this.playersAndSpectators[spectator.user.username] = new Spectator(spectator.id, spectator.user);
-        });
+        }
 
         this.setMaxListeners(0);
 
@@ -103,6 +114,11 @@ class Game extends EventEmitter {
 
     get messages() {
         return this.gameChat.messages;
+    }
+
+    getPlainTextLog() {
+        let formatter = new PlainTextGameChatFormatter(this.gameChat);
+        return formatter.format();
     }
 
     hasActivePlayer(playerName) {
@@ -149,11 +165,11 @@ class Game extends EventEmitter {
     }
 
     getSpectators() {
-        return _.pick(this.playersAndSpectators, player => player.isSpectator());
+        return Object.values(this.playersAndSpectators).filter(player => player.isSpectator());
     }
 
     getFirstPlayer() {
-        return _.find(this.getPlayers(), p => {
+        return this.getPlayers().find(p => {
             return p.firstPlayer;
         });
     }
@@ -167,6 +183,10 @@ class Game extends EventEmitter {
 
     getOpponents(player) {
         return this.getPlayers().filter(p => p !== player);
+    }
+
+    getOpponentsInFirstPlayerOrder(player) {
+        return this.getPlayersInFirstPlayerOrder().filter(p => p !== player);
     }
 
     isCardVisible(card, player) {
@@ -192,13 +212,13 @@ class Game extends EventEmitter {
     }
 
     anyPlotHasTrait(trait) {
-        return _.any(this.getPlayers(), player =>
+        return this.getPlayers().some(player =>
             player.activePlot &&
             player.activePlot.hasTrait(trait));
     }
 
     getNumberOfPlotsWithTrait(trait) {
-        return _.reduce(this.getPlayers(), (sum, player) => {
+        return this.getPlayers().reduce((sum, player) => {
             if(player.activePlot && player.activePlot.hasTrait(trait)) {
                 return sum + 1;
             }
@@ -261,20 +281,20 @@ class Game extends EventEmitter {
     }
 
     defaultCardClick(player, card) {
-        if(card.facedown || card.controller !== player || !['faction', 'play area'].includes(card.location)) {
+        if(card.facedown || card.controller !== player) {
             return;
         }
 
-        if(card.kneeled) {
-            player.standCard(card, { force: true });
-        } else {
-            player.kneelCard(card, { force: true });
-        }
+        let action = card.kneeled ?
+            GameActions.standCard({ card, force: true }) :
+            GameActions.kneelCard({ card, force: true });
 
-        let standStatus = card.kneeled ? 'kneels' : 'stands';
-        let cardFragment = card.getType() === 'faction' ? 'their faction card' : card;
+        this.resolveGameAction(action).thenExecute(() => {
+            let standStatus = card.kneeled ? 'kneels' : 'stands';
+            let cardFragment = card.getType() === 'faction' ? 'their faction card' : card;
 
-        this.addAlert('danger', '{0} {1} {2}', player, standStatus, cardFragment);
+            this.addAlert('danger', '{0} {1} {2}', player, standStatus, cardFragment);
+        });
     }
 
     cardHasMenuItem(card, player, menuItem) {
@@ -379,28 +399,14 @@ class Game extends EventEmitter {
             return 0;
         }
 
-        if(player.maxGoldGain.getMax() !== undefined) {
-            amount = Math.min(amount, player.maxGoldGain.getMax() - player.gainedGold);
-        }
-        player.gainedGold += amount;
-
-        return player.modifyGold(amount);
+        const event = this.resolveGameAction(GameActions.gainGold({ player, amount }));
+        return event.amount;
     }
 
     movePower(fromCard, toCard, power) {
-        if(power < 1) {
-            return;
-        }
-
-        this.applyGameAction('movePower', fromCard, fromCard => {
-            let appliedPower = Math.min(fromCard.power, power);
-            fromCard.power -= appliedPower;
-            toCard.power += appliedPower;
-
-            this.raiseEvent('onCardPowerMoved', { source: fromCard, target: toCard, power: appliedPower });
-
-            this.checkWinCondition(toCard.controller);
-        });
+        return this.resolveGameAction(
+            GameActions.movePower({ from: fromCard, to: toCard, amount: power })
+        );
     }
 
     /**
@@ -555,7 +561,7 @@ class Game extends EventEmitter {
             player.minReserve = 0;
         }
 
-        if(stat === 'claim' && _.isNumber(player.activePlot.claimSet)) {
+        if(stat === 'claim' && typeof (player.activePlot.claimSet) === 'number') {
             player.activePlot.claimSet += value;
 
             if(player.activePlot.claimSet < 0) {
@@ -644,6 +650,10 @@ class Game extends EventEmitter {
         this.queueStep(new MenuPrompt(this, player, contextObj, properties));
     }
 
+    promptForCardName(properties) {
+        this.queueStep(new CardNamePrompt(this, properties));
+    }
+
     promptForIcon(player, card, callback = () => true) {
         this.queueStep(new IconPrompt(this, player, card, callback));
     }
@@ -658,17 +668,27 @@ class Game extends EventEmitter {
         });
     }
 
-    promptForOpponentChoice(player, properties) {
-        this.queueStep(new ChooseOpponentPrompt(this, player, properties));
+    promptForOpponentChoice(player, { condition = () => true, context, enabled, onSelect, onCancel }) {
+        let finalCondition = (opponent, context) => opponent !== player && condition(opponent, context);
+
+        this.queueStep(new ChoosePlayerPrompt(this, player, {
+            context,
+            enabled,
+            onSelect,
+            onCancel,
+            condition: finalCondition,
+            activePromptTitle: 'Select an opponent',
+            waitingPromptTitle: 'Waiting for player to select an opponent'
+        }));
     }
 
-    menuButton(playerName, arg, method) {
+    menuButton(playerName, arg, method, promptId) {
         var player = this.getPlayerByName(playerName);
         if(!player) {
             return;
         }
 
-        if(this.pipeline.handleMenuCommand(player, arg, method)) {
+        if(this.pipeline.handleMenuCommand(player, arg, method, promptId)) {
             return true;
         }
     }
@@ -712,17 +732,23 @@ class Game extends EventEmitter {
     initialise() {
         var players = {};
 
-        _.each(this.playersAndSpectators, player => {
+        for(let player of Object.values(this.playersAndSpectators)) {
             if(!player.left) {
                 players[player.name] = player;
             }
-        });
+        }
 
         this.playersAndSpectators = players;
 
-        _.each(this.getPlayers(), player => {
+        if(this.useGameTimeLimit) {
+            let timeLimitStartType = 'whenSetupFinished'; //todo: change to property of game when more kinds of time limit start triggers are implemented/asked for
+            let timeLimitInMinutes = this.gameTimeLimit;
+            this.timeLimit.initialiseTimeLimit(timeLimitStartType, timeLimitInMinutes);
+        }
+
+        for(let player of this.getPlayers()) {
             player.initialise();
-        });
+        }
 
         this.pipeline.initialise([
             Phases.createStep('setup', this),
@@ -749,9 +775,16 @@ class Game extends EventEmitter {
         }
     }
 
+    checkForTimeExpired() {
+        if(this.timeLimit.isTimeLimitReached && !this.finishedAt) {
+            this.determineWinnerAfterTimeLimitExpired();
+        }
+    }
+
     beginRound() {
         // Reset phases to the standard game flow.
         this.remainingPhases = Phases.names();
+
         this.raiseEvent('onBeginRound');
         this.queueSimpleStep(() => {
             // Loop through individual phases, queuing them one at a time. This
@@ -779,14 +812,21 @@ class Game extends EventEmitter {
 
     markActionAsTaken(context) {
         if(this.currentActionWindow) {
-            this.currentActionWindow.markActionAsTaken();
+            if(this.currentActionWindow.currentPlayer !== context.player) {
+                this.addAlert('danger', '{0} uses {1} during {2}\'s turn in the action window', context.player, context.source, this.currentActionWindow.currentPlayer);
+            }
+            this.currentActionWindow.markActionAsTaken(context.player);
         } else if(this.currentPhase !== 'marshal' || this.hasOpenInterruptOrReactionWindow()) {
             this.addAlert('danger', '{0} uses {1} outside of an action window', context.player, context.source);
         }
     }
 
     get currentAbilityContext() {
-        return _.last(this.abilityContextStack);
+        if(this.abilityContextStack.length === 0) {
+            return null;
+        }
+
+        return this.abilityContextStack[this.abilityContextStack.length - 1];
     }
 
     pushAbilityContext(context) {
@@ -829,13 +869,13 @@ class Game extends EventEmitter {
     }
 
     registerAbility(ability, event) {
-        let windowIndex = _.findLastIndex(this.abilityWindowStack, window => window.canTriggerAbility(ability));
+        let reverseStack = [...this.abilityWindowStack].reverse();
+        let window = reverseStack.find(window => window.canTriggerAbility(ability));
 
-        if(windowIndex === -1) {
+        if(!window) {
             return;
         }
 
-        let window = this.abilityWindowStack[windowIndex];
         window.registerAbility(ability, event);
     }
 
@@ -877,9 +917,9 @@ class Game extends EventEmitter {
      * version of the event that lists all cards.
      */
     raiseSimultaneousEvent(cards, properties) {
-        let event = new GroupedCardEvent(properties.eventName, _.extend({ cards: cards }, properties.params), properties.handler, properties.postHandler);
+        let event = new GroupedCardEvent(properties.eventName, Object.assign({ cards: cards }, properties.params), properties.handler, properties.postHandler);
         for(let card of cards) {
-            let perCardParams = _.extend({ card: card }, properties.params);
+            let perCardParams = Object.assign({ card: card }, properties.params);
             let childEvent = new Event(properties.perCardEventName, perCardParams, properties.perCardHandler);
             event.addChildEvent(childEvent);
         }
@@ -889,6 +929,16 @@ class Game extends EventEmitter {
 
     resolveEvent(event) {
         this.queueStep(new EventWindow(this, event, () => this.postEventCalculations()));
+    }
+
+    resolveGameAction(action, props) {
+        if(!action.allow(props)) {
+            return new NullEvent();
+        }
+
+        let event = action.createEvent(props);
+        this.resolveEvent(event);
+        return event;
     }
 
     /**
@@ -974,9 +1024,13 @@ class Game extends EventEmitter {
         }
 
         this.applyGameAction('takeControl', card, card => {
-            oldController.removeCardFromPile(card);
-            card.takeControl(newController, source);
-            newController.cardsInPlay.push(card);
+            if(card.parent) {
+                card.takeControl(newController, source);
+            } else {
+                oldController.removeCardFromPile(card);
+                card.takeControl(newController, source);
+                newController.cardsInPlay.push(card);
+            }
 
             if(card.location !== 'play area') {
                 let originalLocation = card.location;
@@ -985,8 +1039,7 @@ class Game extends EventEmitter {
                 this.raiseEvent('onCardEntersPlay', { card: card, playingType: 'play', originalLocation: originalLocation });
             }
 
-            this.raiseEvent('onCardTakenControl', { card: card });
-            this.checkWinCondition(player);
+            this.handleControlChange(card);
         });
     }
 
@@ -998,6 +1051,16 @@ class Game extends EventEmitter {
         card.controller.removeCardFromPile(card);
         card.revertControl(source);
         card.controller.cardsInPlay.push(card);
+
+        this.handleControlChange(card);
+    }
+
+    handleControlChange(card) {
+        if(this.currentChallenge && this.currentChallenge.isParticipating(card)) {
+            this.addMessage('{0} is removed from the challenge because control has changed', card);
+            this.currentChallenge.removeFromChallenge(card);
+        }
+
         this.raiseEvent('onCardTakenControl', { card: card });
         this.checkWinCondition(card.controller);
     }
@@ -1032,7 +1095,7 @@ class Game extends EventEmitter {
     }
 
     join(socketId, user) {
-        if(this.started || _.values(this.getPlayers()).length === 2) {
+        if(this.started || this.getPlayers().length === 2) {
             return false;
         }
 
@@ -1042,11 +1105,23 @@ class Game extends EventEmitter {
     }
 
     isEmpty() {
-        return _.all(this.playersAndSpectators, player => player.disconnected || player.left || player.id === 'TBA');
+        return Object.values(this.playersAndSpectators).every(player => {
+            if(player.left || player.id === 'TBA') {
+                return true;
+            }
+
+            if(!player.disconnectedAt) {
+                return false;
+            }
+
+            let difference = moment().diff(moment(player.disconnectedAt), 'seconds');
+
+            return difference > 30;
+        });
     }
 
     leave(playerName) {
-        var player = this.playersAndSpectators[playerName];
+        let player = this.playersAndSpectators[playerName];
 
         if(!player) {
             return;
@@ -1072,12 +1147,12 @@ class Game extends EventEmitter {
             return;
         }
 
-        this.addAlert('warning', '{0} has disconnected', player);
+        this.addAlert('warning', '{0} has disconnected.  The game will wait up to 30 seconds for them to reconnect', player);
 
         if(player.isSpectator()) {
             delete this.playersAndSpectators[playerName];
         } else {
-            player.disconnected = true;
+            player.disconnectedAt = new Date();
         }
 
         player.socket = undefined;
@@ -1095,7 +1170,7 @@ class Game extends EventEmitter {
         } else {
             this.addAlert('danger', '{0} has failed to connect to the game', player);
 
-            player.disconnected = true;
+            player.disconnectedAt = new Date();
 
             if(!this.finishedAt) {
                 this.finishedAt = new Date();
@@ -1111,9 +1186,22 @@ class Game extends EventEmitter {
 
         player.id = socket.id;
         player.socket = socket;
-        player.disconnected = false;
+        player.disconnectedAt = undefined;
 
         this.addAlert('info', '{0} has reconnected', player);
+    }
+
+    rematch() {
+        if(!this.finishedAt) {
+            this.finishedAt = new Date();
+            this.winReason = 'rematch';
+        }
+
+        this.router.rematch(this);
+    }
+
+    timeExpired() {
+        this.emit('onTimeExpired');
     }
 
     activatePersistentEffects() {
@@ -1129,7 +1217,7 @@ class Game extends EventEmitter {
     }
 
     getSaveState() {
-        var players = _.map(this.getPlayers(), player => {
+        var players = this.getPlayers().map(player => {
             return {
                 name: player.name,
                 faction: player.faction.name || player.faction.value,
@@ -1154,9 +1242,11 @@ class Game extends EventEmitter {
         let playerState = {};
 
         if(this.started) {
-            _.each(this.getPlayers(), player => {
+            for(let player of this.getPlayers()) {
                 playerState[player.name] = player.getState(activePlayer);
-            });
+            }
+
+            this.timeLimit.checkForTimeLimitReached();
 
             return {
                 id: this.id,
@@ -1166,7 +1256,7 @@ class Game extends EventEmitter {
                 players: playerState,
                 messages: this.gameChat.messages,
                 showHand: this.showHand,
-                spectators: _.map(this.getSpectators(), spectator => {
+                spectators: this.getSpectators().map(spectator => {
                     return {
                         id: spectator.id,
                         name: spectator.name
@@ -1174,7 +1264,11 @@ class Game extends EventEmitter {
                 }),
                 started: this.started,
                 winner: this.winner ? this.winner.name : undefined,
-                cancelPromptUsed: this.cancelPromptUsed
+                cancelPromptUsed: this.cancelPromptUsed,
+                useGameTimeLimit: this.useGameTimeLimit,
+                gameTimeLimitStarted: this.timeLimit.timeLimitStarted,
+                gameTimeLimitStartedAt: this.timeLimit.timeLimitStartedAt,
+                gameTimeLimitTime: this.timeLimit.timeLimitInMinutes
             };
         }
 
@@ -1184,7 +1278,7 @@ class Game extends EventEmitter {
     getSummary(activePlayerName, options = {}) {
         var playerSummaries = {};
 
-        _.each(this.getPlayers(), player => {
+        for(let player of this.getPlayers()) {
             var deck = undefined;
             if(player.left) {
                 return;
@@ -1209,7 +1303,7 @@ class Game extends EventEmitter {
                 owner: player.owner,
                 user: options.fullData && player.user
             };
-        });
+        }
 
         return {
             allowSpectators: this.allowSpectators,
@@ -1224,7 +1318,7 @@ class Game extends EventEmitter {
             showHand: this.showHand,
             started: this.started,
             startedAt: this.startedAt,
-            spectators: _.map(this.getSpectators(), spectator => {
+            spectators: this.getSpectators().map(spectator => {
                 return {
                     id: spectator.id,
                     lobbyId: spectator.lobbyId,
@@ -1232,6 +1326,60 @@ class Game extends EventEmitter {
                 };
             })
         };
+    }
+
+    determineWinnerAfterTimeLimitExpired() {
+        //find out the highest power total among all players left
+        const highestPowerTotal = this.getPlayers().reduce((highestPowerTotal, player) => {
+            if(highestPowerTotal < player.getTotalPower()) {
+                highestPowerTotal = player.getTotalPower();
+            }
+            return highestPowerTotal;
+        }, 0);
+        //find out the highest number of cards left in a draw deck among the remaining players
+        const mostCardsLeftInDrawDeck = this.getPlayers().reduce((mostCardsLeftInDrawDeck, player) => {
+            if(mostCardsLeftInDrawDeck < player.drawDeck.length) {
+                mostCardsLeftInDrawDeck = player.drawDeck.length;
+            }
+            return mostCardsLeftInDrawDeck;
+        }, 0);
+        //find out the smallest number of characters in a dead pile among the remaining players
+        const smallestNumberOfCharsInDeadPile = this.getPlayers().reduce((smallestNumberOfCharsInDeadPile, player) => {
+            if(smallestNumberOfCharsInDeadPile > player.deadPile.length) {
+                smallestNumberOfCharsInDeadPile = player.deadPile.length;
+            }
+            return smallestNumberOfCharsInDeadPile;
+        }, 1000);
+
+        const rules = [
+            player => player.canWinGame(),
+            player => player.getTotalPower() >= highestPowerTotal,
+            player => player.drawDeck.length >= mostCardsLeftInDrawDeck,
+            player => {
+                if(this.winnerOfDominanceInLastRound) {
+                    return player.name === this.winnerOfDominanceInLastRound.name;
+                }
+                //if no one won dom, then this rule should not filter any players
+                return true;
+            },
+            player => player.deadPile.length <= smallestNumberOfCharsInDeadPile,
+            player => player.firstPlayer
+        ];
+
+        let remainingPlayers = this.getPlayers();
+        for(const rule of rules) {
+            remainingPlayers = remainingPlayers.filter(player => rule(player));
+            if(remainingPlayers.length === 1) {
+                this.recordWinner(remainingPlayers[0], 'time');
+                return;
+            } else if(remainingPlayers.length === 0) {
+                this.recordDraw('No one');
+                return;
+            }
+        }
+        //this should not be reached as it means after filtering the players with every rule there are still multiple players left
+        this.addAlert('After checking for every tie breaker rule to determine the winner of the game, no winner could be determined. This should not have happened. Please report this to the developers as it is likely a bug.');
+        this.recordDraw('No one');
     }
 }
 

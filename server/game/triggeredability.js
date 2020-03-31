@@ -1,5 +1,3 @@
-const _ = require('underscore');
-
 const BaseAbility = require('./baseability.js');
 const Costs = require('./costs.js');
 const TriggeredAbilityContext = require('./TriggeredAbilityContext.js');
@@ -54,7 +52,17 @@ class TriggeredAbility extends BaseAbility {
     }
 
     createContext(event) {
-        return new TriggeredAbilityContext({ event: event, game: this.game, source: this.card, player: this.playerFunc() });
+        return new TriggeredAbilityContext({
+            ability: this,
+            event: event,
+            game: this.game,
+            source: this.card,
+            player: this.playerFunc()
+        });
+    }
+
+    triggersFor(eventName) {
+        return !!this.when[eventName];
     }
 
     isTriggeredByEvent(event) {
@@ -78,7 +86,7 @@ class TriggeredAbility extends BaseAbility {
             return false;
         }
 
-        if(this.isCardAbility() && !this.isForcedAbility() && context.player && !context.player.canTrigger(this.card)) {
+        if(this.isCardAbility() && !this.isForcedAbility() && context.player && !context.player.canTrigger(this)) {
             return false;
         }
 
@@ -106,7 +114,7 @@ class TriggeredAbility extends BaseAbility {
             return false;
         }
 
-        if(!this.canResolveOpponents(context) || !this.canPayCosts(context) || !this.canResolveTargets(context)) {
+        if(!this.canResolvePlayer(context) || !this.canPayCosts(context) || !this.canResolveTargets(context)) {
             return false;
         }
 
@@ -118,8 +126,11 @@ class TriggeredAbility extends BaseAbility {
         // game events in all open information locations plus while in hand.
         // The location property of the ability will prevent it from firing in
         // inappropriate locations when requirements are checked for the ability.
+        //
+        // Also apparently the draw deck because of Maester Gormon.
+        // Also also apparently under conclave due to Archmaester Marwyn.
         if(this.isPlayableEventAbility()) {
-            return ['discard pile', 'hand', 'shadows', 'play area'].includes(location);
+            return ['conclave', 'discard pile', 'draw deck', 'hand', 'shadows', 'play area'].includes(location);
         }
 
         return this.location.includes(location);
@@ -146,17 +157,17 @@ class TriggeredAbility extends BaseAbility {
             return;
         }
 
-        var eventNames = _.keys(this.when);
+        var eventNames = Object.keys(this.when);
 
         this.events = [];
-        _.each(eventNames, eventName => {
+        for(let eventName of eventNames) {
             var event = {
                 name: eventName + ':' + this.eventType,
                 handler: event => this.eventHandler(event)
             };
             this.game.on(event.name, event.handler);
             this.events.push(event);
-        });
+        }
 
         if(this.limit) {
             this.limit.registerEvents(this.game);
@@ -165,9 +176,9 @@ class TriggeredAbility extends BaseAbility {
 
     unregisterEvents() {
         if(this.events) {
-            _.each(this.events, event => {
+            for(let event of this.events) {
                 this.game.removeListener(event.name, event.handler);
-            });
+            }
             if(this.limit) {
                 this.limit.unregisterEvents(this.game);
             }

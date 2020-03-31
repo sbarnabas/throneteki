@@ -1,5 +1,3 @@
-const _ = require('underscore');
-
 class CostReducer {
     constructor(game, source, properties) {
         this.game = game;
@@ -33,12 +31,16 @@ class CostReducer {
             return false;
         }
 
+        if(playingType === 'play' && this.playingTypes.includes('outOfShadows') && card.location === 'shadows') {
+            return !!this.match(card);
+        }
+
         return this.playingTypes.includes(playingType) && !!this.match(card);
     }
 
     getAmount(card) {
-        if(_.isFunction(this.amount)) {
-            return this.amount(card);
+        if(typeof(this.amount) === 'function') {
+            return this.amount(card) || 0;
         }
 
         return this.amount;

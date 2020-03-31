@@ -1,5 +1,8 @@
-const _ = require('underscore');
 const TextHelper = require('./TextHelper');
+const CancelChallengePrompt = require('./gamesteps/CancelChallengePrompt');
+const Deck = require('./Deck');
+const RematchPrompt = require('./gamesteps/RematchPrompt');
+const {Tokens} = require('./Constants');
 
 class ChatCommands {
     constructor(game) {
@@ -9,9 +12,11 @@ class ChatCommands {
             '/add-icon': this.addIcon,
             '/add-keyword': this.addKeyword,
             '/add-trait': this.addTrait,
+            '/add-card': this.addCard,
             '/bestow': this.bestow,
             '/blank': this.blank,
             '/cancel-prompt': this.cancelPrompt,
+            '/cancel-challenge': this.cancelChallenge,
             '/discard': this.discard,
             '/disconnectme': this.disconnectMe,
             '/draw': this.draw,
@@ -21,6 +26,7 @@ class ChatCommands {
             '/move-bottom': this.moveBottom,
             '/pillage': this.pillage,
             '/power': this.power,
+            '/rematch': this.rematch,
             '/remove-faction': this.removeFaction,
             '/remove-from-game': this.removeFromGame,
             '/remove-icon': this.removeIcon,
@@ -34,19 +40,6 @@ class ChatCommands {
             '/token': this.setToken,
             '/unblank': this.unblank
         };
-        this.tokens = [
-            'bell',
-            'betrayal',
-            'ear',
-            'gold',
-            'kiss',
-            'poison',
-            'power',
-            'stand',
-            'valarmorghulis',
-            'vengeance',
-            'venom'
-        ];
     }
 
     executeCommand(player, command, args) {
@@ -231,7 +224,7 @@ class ChatCommands {
             waitingPromptTitle: 'Waiting for opponent to set strength',
             cardCondition: card => card.location === 'play area' && card.controller === player && card.getType() === 'character',
             onSelect: (p, card) => {
-                if(_.isNumber(card.strengthSet)) {
+                if(typeof (card.strengthSet) === 'number') {
                     card.strengthSet = num;
                 } else {
                     card.strengthModifier = num - card.getPrintedStrength();
@@ -311,6 +304,15 @@ class ChatCommands {
         this.game.cancelPromptUsed = true;
     }
 
+    cancelChallenge(player) {
+        if(!this.game.isDuringChallenge()) {
+            return;
+        }
+
+        this.game.addAlert('danger', '{0} uses /cancel-challenge to attempt to cancel the current challenge', player);
+        this.game.queueStep(new CancelChallengePrompt(this.game, player));
+    }
+
     setToken(player, args) {
         let token = args[1];
         let num = this.getNumberOrDefault(args[2], 1);
@@ -322,7 +324,8 @@ class ChatCommands {
         this.game.promptForSelect(player, {
             activePromptTitle: 'Select a card',
             waitingPromptTitle: 'Waiting for opponent to set token',
-            cardCondition: card => (card.location === 'play area' || card.location === 'plot') && card.controller === player,
+            cardCondition: card => ['agenda', 'active plot', 'play area', 'shadows'].includes(card.location) && card.controller === player,
+            cardType: ['agenda', 'attachment', 'character', 'event', 'location', 'plot'],
             onSelect: (p, card) => {
                 let numTokens = card.tokens[token] || 0;
 
@@ -428,6 +431,34 @@ class ChatCommands {
         });
     }
 
+    addCard(player, args) {
+        let cardName = args.slice(1).join(' ');
+        let card = Object.values(this.game.cardData).find(c => {
+            return c.label.toLowerCase() === cardName.toLowerCase() || c.name.toLowerCase() === cardName.toLowerCase();
+        });
+
+        if(!card) {
+            return false;
+        }
+
+        let deck = new Deck();
+        let preparedCard = deck.createCard(player, card);
+
+        preparedCard.applyAnyLocationPersistentEffects();
+
+        if(deck.isDrawCard(card)) {
+            player.moveCard(preparedCard, 'draw deck');
+        } else if(deck.isPlotCard(card)) {
+            player.moveCard(preparedCard, 'plot deck');
+        }
+
+        this.game.allCards.push(preparedCard);
+
+        this.game.addAlert('danger', '{0} uses the /add-card command to add {1} to their deck', player, card);
+
+        return true;
+    }
+
     getNumberOrDefault(string, defaultNumber) {
         var num = parseInt(string);
 
@@ -457,9 +488,17 @@ class ChatCommands {
             return false;
         }
 
-        var lowerToken = token.toLowerCase();
+        return Tokens.includes(token);
+    }
 
-        return _.contains(this.tokens, lowerToken);
+    rematch(player) {
+        if(this.game.finishedAt) {
+            this.game.addAlert('info', '{0} is requesting a rematch', player);
+        } else {
+            this.game.addAlert('danger', '{0} is requesting a rematch.  The current game is not finished', player);
+        }
+
+        this.game.queueStep(new RematchPrompt(this.game, player));
     }
 }
 

@@ -1,5 +1,3 @@
-const _ = require('underscore');
-
 const AbilityContext = require('./AbilityContext.js');
 const BaseAbility = require('./baseability.js');
 const Costs = require('./costs.js');
@@ -54,14 +52,16 @@ class CardAction extends BaseAbility {
         this.events = new EventRegistrar(game, this);
         this.activationContexts = [];
 
-        this.handler = this.buildHandler(card, properties);
-
         if(card.getPrintedType() === 'event') {
             this.cost = this.cost.concat(Costs.playEvent());
         }
 
         if(this.max) {
             this.card.owner.registerAbilityMax(this.card.name, this.max);
+        }
+
+        if(!this.gameAction) {
+            throw new Error('Actions must have a `gameAction` or `handler` property.');
         }
     }
 
@@ -77,14 +77,6 @@ class CardAction extends BaseAbility {
         return properties.phase;
     }
 
-    buildHandler(card, properties) {
-        if(!properties.handler) {
-            throw new Error('Actions must have a `handler` property.');
-        }
-
-        return properties.handler;
-    }
-
     allowMenu() {
         return ['play area', 'agenda', 'active plot'].includes(this.location) && this.card.getPrintedType() !== 'event';
     }
@@ -95,6 +87,7 @@ class CardAction extends BaseAbility {
 
     createContext(player) {
         return new AbilityContext({
+            ability: this,
             game: this.game,
             player: player,
             source: this.card
@@ -106,7 +99,7 @@ class CardAction extends BaseAbility {
             return false;
         }
 
-        if(this.isCardAbility() && !context.player.canTrigger(this.card)) {
+        if(this.isCardAbility() && !context.player.canTrigger(this)) {
             return false;
         }
 
@@ -134,11 +127,11 @@ class CardAction extends BaseAbility {
             return false ;
         }
 
-        if(this.condition && !this.condition()) {
+        if(this.condition && !this.condition(context)) {
             return false;
         }
 
-        return this.canResolveOpponents(context) && this.canPayCosts(context) && this.canResolveTargets(context);
+        return this.canResolvePlayer(context) && this.canPayCosts(context) && this.canResolveTargets(context) && this.gameAction.allow(context);
     }
 
     execute(player, arg) {
@@ -153,10 +146,6 @@ class CardAction extends BaseAbility {
         this.game.resolveAbility(this, context);
 
         return true;
-    }
-
-    executeHandler(context) {
-        this.handler(context);
     }
 
     getMenuItem(arg, player) {
@@ -193,7 +182,11 @@ class CardAction extends BaseAbility {
     }
 
     deactivate(player) {
-        var context = _.last(this.activationContexts);
+        if(this.activationContexts.length === 0) {
+            return false;
+        }
+
+        var context = this.activationContexts[this.activationContexts.length - 1];
 
         if(!context || player !== context.player) {
             return false;

@@ -20,7 +20,6 @@ describe('Craster', function() {
             this.character = this.player1.findCardByName('Steward at the Wall', 'hand');
 
             this.opponentCharacter = this.player2.findCardByName('Steward at the Wall', 'hand');
-
         });
 
         describe('while Craster is out when characters are killed', function() {
@@ -60,7 +59,7 @@ describe('Craster', function() {
             describe('when sacrificing Craster in the following phase', function() {
                 beforeEach(function() {
                     // Clear plot phase by passing on the action window.
-                    this.player1.clickPrompt('Pass');
+                    this.skipActionWindow();
 
                     this.player1.clickMenu(this.craster, 'Sacrifice to resurrect');
                 });

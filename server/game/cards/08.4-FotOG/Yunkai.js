@@ -1,6 +1,5 @@
-const _ = require('underscore');
-
 const DrawCard = require('../../drawcard.js');
+const {Tokens} = require('../../Constants');
 
 class Yunkai extends DrawCard {
     setupCardAbilities(ability) {
@@ -15,9 +14,9 @@ class Yunkai extends DrawCard {
             handler: context => {
                 let participantsToRemove = this.game.filterCardsInPlay(card => card.isParticipating() && card.getStrength() <= context.xValue);
 
-                _.each(participantsToRemove, card => {
+                for(let card of participantsToRemove) {
                     this.game.currentChallenge.removeFromChallenge(card);
-                });
+                }
 
                 this.game.addMessage('{0} kneels and discards {1} gold from {2} to remove all characters with STR {1} or lower from the challenge',
                     context.player, context.xValue, this);
@@ -32,25 +31,25 @@ class Yunkai extends DrawCard {
             return;
         }
 
-        this.modifyToken('gold', 2);
+        this.modifyToken(Tokens.gold, 2);
         this.game.addMessage('{0} places 2 gold tokens from the treasury on {1}', this.controller, this);
     }
 
     getLowestParticipatingStr() {
         let strengths = this.getParticipatingStrengths();
-        let lowestStrength = _.min(strengths);
-        return _.max([lowestStrength, 1]);
+        let lowestStrength = Math.min(...strengths);
+        return Math.max(lowestStrength, 1);
     }
 
     getHighestParticipatingStr() {
         let strengths = this.getParticipatingStrengths();
-        let highestStrength = _.max(strengths);
-        return _.max([highestStrength, 1]);
+        let highestStrength = Math.max(...strengths);
+        return Math.max(highestStrength, 1);
     }
 
     getParticipatingStrengths() {
         let participatingCharacters = this.game.filterCardsInPlay(card => card.isParticipating());
-        return _.map(participatingCharacters, card => card.getStrength());
+        return participatingCharacters.map(card => card.getStrength());
     }
 }
 

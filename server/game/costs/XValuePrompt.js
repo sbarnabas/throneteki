@@ -1,4 +1,4 @@
-const _ = require('underscore');
+const range = require('lodash.range');
 
 const BaseStep = require('../gamesteps/basestep');
 
@@ -13,13 +13,14 @@ class XValuePrompt extends BaseStep {
     }
 
     continue() {
-        if(this.max === 0 || this.min > this.max) {
+        if(this.min > this.max) {
+            this.resolveCost(this.max);
             return;
         }
 
-        let range = _.range(this.min, this.max + 1).reverse();
+        let rangeArray = range(this.min, this.max + 1).reverse();
 
-        let buttons = _.map(range, xValue => {
+        let buttons = rangeArray.map(xValue => {
             return { text: xValue.toString(), method: 'resolveCost', arg: xValue };
         });
 
@@ -34,7 +35,7 @@ class XValuePrompt extends BaseStep {
 
     resolveCost(player, xValue) {
         this.context.xValue = xValue;
-        this.context.goldCost = _.max([xValue - this.reduction, 0]);
+        this.context.goldCost = Math.max(xValue - this.reduction, 0);
 
         return true;
     }

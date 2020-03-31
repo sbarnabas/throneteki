@@ -1,10 +1,11 @@
-const _ = require('underscore');
 const BaseStep = require('./basestep.js');
+const uuid = require('uuid');
 
 class UiPrompt extends BaseStep {
     constructor(game) {
         super(game);
         this.completed = false;
+        this.promptId = uuid.v1();
     }
 
     isComplete() {
@@ -16,13 +17,13 @@ class UiPrompt extends BaseStep {
     }
 
     setPrompt() {
-        _.each(this.game.getPlayers(), player => {
+        for(let player of this.game.getPlayers()) {
             if(this.activeCondition(player)) {
                 player.setPrompt(this.addDefaultCommandToButtons(this.activePrompt(player)));
             } else {
                 player.setPrompt(this.addDefaultCommandToButtons(this.waitingPrompt(player)));
             }
-        });
+        }
     }
 
     activeCondition() {
@@ -33,12 +34,20 @@ class UiPrompt extends BaseStep {
     }
 
     addDefaultCommandToButtons(original) {
-        var prompt = _.clone(original);
+        var prompt = Object.assign({}, original);
         if(prompt.buttons) {
-            _.each(prompt.buttons, button => {
+            for(let button of prompt.buttons) {
                 button.command = button.command || 'menuButton';
-            });
+                button.promptId = this.promptId;
+            }
         }
+
+        if(prompt.controls) {
+            for(let control of prompt.controls) {
+                control.promptId = this.promptId;
+            }
+        }
+
         return prompt;
     }
 
@@ -51,6 +60,7 @@ class UiPrompt extends BaseStep {
 
         if(completed) {
             this.clearPrompts();
+            this.onCompleted();
         } else {
             this.setPrompt();
         }
@@ -59,9 +69,23 @@ class UiPrompt extends BaseStep {
     }
 
     clearPrompts() {
-        _.each(this.game.getPlayers(), player => {
+        for(let player of this.game.getPlayers()) {
             player.cancelPrompt();
-        });
+        }
+    }
+
+    isCorrectPrompt(promptId) {
+        if(!promptId) {
+            return false;
+        }
+
+        return promptId.toLowerCase() === this.promptId.toLowerCase();
+    }
+
+    /**
+     * Handler that will be called once isComplete() returns true.
+     */
+    onCompleted() {
     }
 }
 

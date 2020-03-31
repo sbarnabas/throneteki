@@ -1,4 +1,5 @@
 const DrawCard = require('../../../server/game/drawcard.js');
+const {Tokens} = require('../../../server/game/Constants');
 
 describe('DrawCard', function () {
     beforeEach(function () {
@@ -13,6 +14,43 @@ describe('DrawCard', function () {
         it('should set the location', function() {
             this.card.moveTo('hand');
             expect(this.card.location).toBe('hand');
+        });
+
+        describe('when the card has tokens on it', function() {
+            beforeEach(function() {
+                this.card.location = 'play area';
+                this.card.power = 1;
+                this.card.modifyToken(Tokens.gold, 2);
+            });
+
+            describe('when moving the card between areas', function() {
+                beforeEach(function() {
+                    this.card.moveTo('hand');
+                });
+
+                it('should remove any power on the card', function() {
+                    expect(this.card.power).toBe(0);
+                });
+
+                it('should remove any tokens on the card', function() {
+                    expect(this.card.tokens[Tokens.gold]).toBeUndefined();
+                });
+            });
+
+            describe('when moving the card within the same parent', function() {
+                beforeEach(function() {
+                    this.card.parent = jasmine.createSpyObj('parent1', ['removeChildCard']);
+                    this.card.moveTo('play area', jasmine.createSpyObj('parent2', ['removeChildCard']));
+                });
+
+                it('should not remove any power on the card', function() {
+                    expect(this.card.power).toBe(1);
+                });
+
+                it('should not remove any tokens on the card', function() {
+                    expect(this.card.tokens[Tokens.gold]).toBe(2);
+                });
+            });
         });
 
         describe('when the card is facedown', function() {

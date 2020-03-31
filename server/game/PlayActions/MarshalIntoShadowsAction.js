@@ -22,7 +22,8 @@ class MarshalIntoShadowsAction extends BaseAbility {
         return (
             game.currentPhase === 'marshal' &&
             source.isShadow() &&
-            player.isCardInPlayableLocation(source, 'marshal')
+            player.allowMarshal &&
+            player.isCardInPlayableLocation(source, 'marshalIntoShadows')
         );
     }
 

@@ -1,16 +1,19 @@
 const monk = require('monk');
 const moment = require('moment');
 const crypto = require('crypto');
+const EventEmitter = require('events');
 
 const escapeRegex = require('../util').escapeRegex;
 const logger = require('../log');
 const User = require('../models/User');
 
-class UserService {
-    constructor(db, config) {
+class UserService extends EventEmitter {
+    constructor(db, configService) {
+        super();
+
         this.users = db.get('users');
         this.sessions = db.get('sessions');
-        this.config = config;
+        this.configService = configService;
     }
 
     getUserByUsername(username) {
@@ -69,7 +72,8 @@ class UserService {
             promptedActionWindows: user.promptedActionWindows,
             permissions: user.permissions,
             verified: user.verified,
-            disabled: user.disabled
+            disabled: user.disabled,
+            patreon: user.patreon
         };
 
         if(user.password && user.password !== '') {
@@ -88,6 +92,8 @@ class UserService {
             '$set': {
                 blockList: user.blockList
             }
+        }).then(() => {
+            this.emit('onBlocklistChanged', user);
         }).catch(err => {
             logger.error(err);
 
@@ -132,21 +138,21 @@ class UserService {
     }
 
     clearUserSessions(username) {
-        return new Promise(async (resolve, reject) => {
+        return new Promise((resolve, reject) => {
             const user = this.getUserByUsername(username);
             if(!user) {
                 return reject('User not found');
             }
 
-            await this.users.update({ username: username }, { '$set': { tokens: [] } });
-
-            resolve(true);
+            this.users.update({ username: username }, { '$set': { tokens: [] } }).then(() => {
+                resolve(true);
+            });
         });
     }
 
     addRefreshToken(username, token, ip) {
         let expiration = moment().add(1, 'months');
-        let hmac = crypto.createHmac('sha512', this.config.hmacSecret);
+        let hmac = crypto.createHmac('sha512', this.configService.getValue('hmacSecret'));
 
         let newId = monk.id();
         let encodedToken = hmac.update(`REFRESH ${username} ${newId}`).digest('hex');
@@ -175,7 +181,7 @@ class UserService {
     }
 
     verifyRefreshToken(username, refreshToken) {
-        let hmac = crypto.createHmac('sha512', this.config.hmacSecret);
+        let hmac = crypto.createHmac('sha512', this.configService.getValue('hmacSecret'));
         let encodedToken = hmac.update(`REFRESH ${username} ${refreshToken._id}`).digest('hex');
 
         if(encodedToken !== refreshToken.token) {
@@ -211,6 +217,22 @@ class UserService {
     removeRefreshToken(username, tokenId) {
         return this.users.update({ username: username }, { '$pull': { tokens: { _id: tokenId } } }).catch(err => {
             logger.error(err);
+        });
+    }
+
+    setSupporterStatus(username, isSupporter) {
+        return this.users.update({ username: username }, { '$set': { 'permissions.isSupporter': isSupporter } });
+    }
+
+    async getPossiblyLinkedAccounts(user) {
+        if(!user.tokens) {
+            return [];
+        }
+
+        let ips = [...new Set(user.tokens.map(token => token.ip).filter(ip => ip))];
+
+        return this.users.find({ 'tokens.ip': { '$in': ips } }).catch(err => {
+            logger.error('Error finding related ips', err, user.username);
         });
     }
 }

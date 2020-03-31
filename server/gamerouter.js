@@ -1,18 +1,22 @@
-const zmq = require('zmq');
+const zmq = require('zeromq');
 const router = zmq.socket('router');
 const logger = require('./log.js');
 const monk = require('monk');
 const EventEmitter = require('events');
+
 const GameService = require('./services/GameService.js');
+const ServiceFactory = require('./services/ServiceFactory.js');
 
 class GameRouter extends EventEmitter {
-    constructor(config) {
+    constructor() {
         super();
 
-        this.workers = {};
-        this.gameService = new GameService(monk(config.dbPath));
+        let configService = ServiceFactory.configService();
 
-        router.bind(config.mqUrl, err => {
+        this.workers = {};
+        this.gameService = new GameService(monk(configService.getValue('dbPath')));
+
+        router.bind(`tcp://0.0.0.0:${configService.getValue('mqPort')}`, err => {
             if(err) {
                 logger.info(err);
             }
@@ -25,7 +29,7 @@ class GameRouter extends EventEmitter {
 
     // External methods
     startGame(game) {
-        var node = this.getNextAvailableGameNode();
+        let node = this.getNextAvailableGameNode();
 
         if(!node) {
             logger.error('Could not find new node for game');
@@ -36,7 +40,7 @@ class GameRouter extends EventEmitter {
 
         node.numGames++;
 
-        this.sendCommand(node.identity, 'STARTGAME', game);
+        this.sendCommand(node.identity, 'STARTGAME', game.getStartGameDetails());
         return node;
     }
 
@@ -69,7 +73,7 @@ class GameRouter extends EventEmitter {
             return {
                 name: worker.identity,
                 numGames: worker.numGames,
-                status: worker.disconnceted ? 'disconnected' : worker.disabled ? 'disabled' : 'active',
+                status: worker.disconnected ? 'disconnected' : worker.disabled ? 'disabled' : 'active',
                 version: worker.version
             };
         });
@@ -189,6 +193,18 @@ class GameRouter extends EventEmitter {
             case 'GAMEWIN':
                 this.gameService.update(message.arg.game);
                 break;
+            case 'REMATCH':
+                this.gameService.update(message.arg.game);
+
+                if(worker) {
+                    worker.numGames--;
+                } else {
+                    logger.error('Got close game for non existant worker', identity);
+                }
+
+                this.emit('onGameRematch', message.arg.game);
+
+                break;
             case 'GAMECLOSED':
                 if(worker) {
                     worker.numGames--;
@@ -224,9 +240,13 @@ class GameRouter extends EventEmitter {
         const pingTimeout = 1 * 60 * 1000;
 
         for(const worker of Object.values(this.workers)) {
+            if(worker.disconnected) {
+                continue;
+            }
+
             if(worker.pingSent && currentTime - worker.pingSent > pingTimeout) {
                 logger.info('worker', worker.identity + ' timed out');
-                this.workers[worker.identity].disconnected = true;
+                worker.disconnected = true;
                 this.emit('onWorkerTimedOut', worker.identity);
             } else if(!worker.pingSent) {
                 if(currentTime - worker.lastMessage > pingTimeout) {

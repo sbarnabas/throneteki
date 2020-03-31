@@ -13,6 +13,12 @@ describe('Event', function() {
         it('should merge parameters onto the event', function() {
             expect(this.event.foo).toBe('bar');
         });
+
+        it('should throw an exception if a reserved property name is used in the parameters', function() {
+            expect(function() {
+                new Event('onEvent', { parent: 'foo' });
+            }).toThrowError(/parent/);
+        });
     });
 
     describe('emitTo', function() {
@@ -170,6 +176,50 @@ describe('Event', function() {
 
             it('should return an array with itself and the concurrent events for its children', function() {
                 expect(this.event.getConcurrentEvents()).toEqual([this.event, 'child-events']);
+            });
+        });
+    });
+
+    describe('resolved', function() {
+        beforeEach(function() {
+            this.event = new Event('onEvent', { foo: 'bar' });
+        });
+
+        describe('when the event is cancelled', function() {
+            beforeEach(function() {
+                this.event.cancel();
+            });
+
+            it('returns false', function() {
+                expect(this.event.resolved).toBe(false);
+            });
+        });
+
+        describe('when the amount is not equal to the desired amount', function() {
+            beforeEach(function() {
+                this.event.amount = 1;
+                this.event.desiredAmount = 2;
+            });
+
+            it('returns false', function() {
+                expect(this.event.resolved).toBe(false);
+            });
+        });
+
+        describe('when the amount is equal to the desired amount', function() {
+            beforeEach(function() {
+                this.event.amount = 2;
+                this.event.desiredAmount = 2;
+            });
+
+            it('returns true', function() {
+                expect(this.event.resolved).toBe(true);
+            });
+        });
+
+        describe('when there are no amounts', function() {
+            it('returns true', function() {
+                expect(this.event.resolved).toBe(true);
             });
         });
     });

@@ -40,7 +40,7 @@ class Dragonbinder extends DrawCard {
     takeDragon() {
         this.game.promptForSelect(this.controller, {
             source: this,
-            cardCondition: card => card.location === 'play area' && card.controller !== this.controller &&
+            cardCondition: card => card.location === 'play area' &&
                                    card.getType() === 'character' && card.hasTrait('Dragon'),
             onSelect: (player, card) => this.onDragonSelected(player, card),
             onCancel: (player) => this.onDragonCanceled(player)
@@ -76,7 +76,6 @@ class Dragonbinder extends DrawCard {
         player.putIntoPlay(card);
         this.game.addMessage('{0} uses {1} and kills {2} to search their deck and put {3} into play',
             player, this, this.costCard, card);
-
     }
 
     onGJCanceled(player) {

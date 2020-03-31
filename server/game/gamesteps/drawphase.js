@@ -1,7 +1,7 @@
-const _ = require('underscore');
 const Phase = require('./phase.js');
 const SimpleStep = require('./simplestep.js');
 const ActionWindow = require('./actionwindow.js');
+const GameActions = require('../GameActions');
 
 class DrawPhase extends Phase {
     constructor(game) {
@@ -13,8 +13,21 @@ class DrawPhase extends Phase {
     }
 
     draw() {
-        _.each(this.game.getPlayers(), p => {
-            p.drawPhase();
+        const players = this.game.getPlayers();
+        const actions = players.map(player => this.createAction(player));
+
+        this.game.resolveGameAction(
+            GameActions.simultaneously(actions)
+        );
+    }
+
+    createAction(player) {
+        return GameActions.drawCards({
+            amount: player.drawPhaseCards,
+            player,
+            reason: 'drawPhase'
+        }).thenExecute(event => {
+            this.game.addMessage('{0} draws {1} cards', event.player, event.amount);
         });
     }
 }

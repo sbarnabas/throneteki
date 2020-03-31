@@ -23,7 +23,7 @@ class BondsOfChivalry extends DrawCard {
 
                 this.game.promptForSelect(this.controller, {
                     activePromptTitle: 'Select a new participant',
-                    cardCondition: card => card !== target && card.controller === this.controller && card.getType() === 'character' && card.hasTrait('Knight') && !card.isParticipating() && !card.kneeled && card.allowGameAction('kneel', context),
+                    cardCondition: card => card !== target && card.location === 'play area' && card.controller === this.controller && card.getType() === 'character' && card.hasTrait('Knight') && !card.isParticipating() && !card.kneeled && card.allowGameAction('kneel', context),
                     onSelect: (player, card) => this.addToChallenge(card),
                     source: this
                 });
@@ -34,11 +34,7 @@ class BondsOfChivalry extends DrawCard {
     addToChallenge(card) {
         this.game.addMessage('{0} kneels {1} to have it participate in the challenge', this.controller, card);
         this.controller.kneelCard(card);
-        if(this.game.currentChallenge.attackingPlayer === this.controller) {
-            this.game.currentChallenge.addAttacker(card);
-        } else {
-            this.game.currentChallenge.addDefender(card);
-        }
+        this.game.currentChallenge.addParticipantToSide(this.controller, card);
 
         return true;
     }

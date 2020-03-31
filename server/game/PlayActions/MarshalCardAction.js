@@ -23,7 +23,9 @@ class MarshalCardAction extends BaseAbility {
         return (
             game.currentPhase === 'marshal' &&
             source.getType() !== 'event' &&
+            player.allowMarshal &&
             player.isCardInPlayableLocation(source, 'marshal') &&
+            !player.canDuplicate(source) &&
             player.canPutIntoPlay(source, 'marshal')
         );
     }
@@ -34,7 +36,7 @@ class MarshalCardAction extends BaseAbility {
             originalController: context.source.controller,
             originalLocation: context.source.location,
             player: context.player,
-            type: context.costs.isDupe ? 'dupe' : 'card'
+            type: 'card'
         };
         context.game.raiseEvent('onCardMarshalled', params, () => {
             context.game.addMessage(this.getMessageFormat(params), context.player, context.source, params.originalController, params.originalLocation, context.costs.gold);
@@ -46,13 +48,11 @@ class MarshalCardAction extends BaseAbility {
         const messages = {
             'card.hand.current': '{0} marshals {1} costing {4} gold',
             'card.other.current': '{0} marshals {1} from their {3} costing {4} gold',
-            'card.other.opponent': '{0} marshals {1} from {2}\'s {3} costing {4} gold',
-            'dupe.hand.current': '{0} duplicates {1} for free',
-            'dupe.other.current': '{0} duplicates {1} from their {3} for free'
+            'card.other.opponent': '{0} marshals {1} from {2}\'s {3} costing {4} gold'
         };
         let hand = params.originalLocation === 'hand' ? 'hand' : 'other';
         let current = params.originalController === params.player ? 'current' : 'opponent';
-        return messages[`${params.type}.${hand}.${current}`] || messages['card.hand.current'];
+        return messages[`card.${hand}.${current}`] || messages['card.hand.current'];
     }
 }
 

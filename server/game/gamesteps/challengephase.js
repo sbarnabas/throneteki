@@ -4,6 +4,7 @@ const Challenge = require('../challenge.js');
 const ChallengeFlow = require('./challenge/challengeflow.js');
 const ChallengeTypes = require('../ChallengeTypes');
 const ActionWindow = require('./actionwindow.js');
+const {ChallengeTracker} = require('../EventTrackers');
 
 class ChallengePhase extends Phase {
     constructor(game) {
@@ -12,6 +13,8 @@ class ChallengePhase extends Phase {
             new SimpleStep(this.game, () => this.beginPhase()),
             new SimpleStep(this.game, () => this.promptForChallenge())
         ]);
+
+        this.tracker = ChallengeTracker.forPhase(game);
     }
 
     beginPhase() {
@@ -87,10 +90,11 @@ class ChallengePhase extends Phase {
             attackingPlayer: attackingPlayer,
             defendingPlayer: defendingPlayer,
             challengeType: challengeType,
-            number: attackingPlayer.getNumberOfChallengesInitiated() + 1
+            number: this.tracker.count({ attackingPlayer }) + 1
         });
         this.game.currentChallenge = challenge;
-        this.game.queueStep(new ChallengeFlow(this.game, challenge));
+        this.game.currentChallengeStep = new ChallengeFlow(this.game, challenge);
+        this.game.queueStep(this.game.currentChallengeStep);
         this.game.queueSimpleStep(() => this.cleanupChallenge());
         this.game.queueSimpleStep(() => this.promptForChallenge());
     }
@@ -101,6 +105,7 @@ class ChallengePhase extends Phase {
         challenge.finish();
         challenge.unregisterEvents();
         this.game.currentChallenge = null;
+        this.game.currentChallengeStep = null;
         this.game.raiseEvent('onChallengeFinished', { challenge: challenge });
     }
 

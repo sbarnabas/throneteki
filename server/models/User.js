@@ -41,6 +41,10 @@ class User {
         return this.userData.blockList || [];
     }
 
+    set blockList(value) {
+        this.userData.blockList = value;
+    }
+
     get password() {
         return this.userData.password;
     }
@@ -59,6 +63,65 @@ class User {
 
     get verified() {
         return this.userData.verified;
+    }
+
+    get registered() {
+        return this.userData.registered;
+    }
+
+    get isAdmin() {
+        return this.userData.permissions && this.userData.permissions.isAdmin;
+    }
+
+    get isContributor() {
+        return this.userData.permissions && this.userData.permissions.isContributor;
+    }
+
+    get isSupporter() {
+        return this.userData.permissions && this.userData.permissions.isSupporter;
+    }
+
+    get role() {
+        if(this.isAdmin) {
+            return 'admin';
+        }
+
+        if(this.isContributor) {
+            return 'contributor';
+        }
+
+        if(this.isSupporter) {
+            return 'supporter';
+        }
+
+        return 'user';
+    }
+
+    get patreon() {
+        return this.userData.patreon;
+    }
+
+    set patreon(value) {
+        this.userData.patreon = value;
+    }
+
+    block(otherUser) {
+        this.userData.blockList = this.userData.blockList || [];
+        this.userData.blockList.push(otherUser.username.toLowerCase());
+    }
+
+    hasUserBlocked(otherUser) {
+        return this.blockList.includes(otherUser.username.toLowerCase());
+    }
+
+    getFullDetails() {
+        let user = Object.assign({}, this.userData);
+
+        delete user.password;
+
+        user = Settings.getUserWithDefaultsSet(user);
+
+        return user;
     }
 
     getWireSafeDetails() {
@@ -81,7 +144,8 @@ class User {
     getShortSummary() {
         return {
             username: this.username,
-            name: this.username
+            name: this.username,
+            role: this.role
         };
     }
 
@@ -92,6 +156,7 @@ class User {
         delete user.tokens;
 
         user = Settings.getUserWithDefaultsSet(user);
+        user.role = this.role;
 
         return user;
     }

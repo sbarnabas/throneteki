@@ -1,4 +1,3 @@
-const _ = require('underscore');
 const AnyNumberCost = require('./costs/AnyNumberCost');
 const ChooseCost = require('./costs/choosecost.js');
 const CostBuilders = require('./costs/CostBuilders.js');
@@ -7,6 +6,9 @@ const XValuePrompt = require('./costs/XValuePrompt.js');
 const SelfCost = require('./costs/SelfCost.js');
 const StandCost = require('./costs/StandCost.js');
 const MoveTokenFromSelfCost = require('./costs/MoveTokenFromSelfCost.js');
+const MovePowerFromFactionCost = require('./costs/MovePowerFromFactionCost');
+const DiscardFromDeckCost = require('./costs/DiscardFromDeckCost');
+const {Tokens} = require('./Constants');
 
 const Costs = {
     /**
@@ -85,6 +87,10 @@ const Costs = {
      */
     putSelfIntoPlay: () => CostBuilders.putIntoPlay.self(),
     /**
+     * Cost that will put into shadows the card that initiated the ability.
+     */
+    putSelfIntoShadows: () => CostBuilders.putIntoShadows.self(),
+    /**
      * Cost that will remove from game the card that initiated the ability.
      */
     removeSelfFromGame: () => CostBuilders.removeFromGame.self(),
@@ -141,6 +147,7 @@ const Costs = {
                 // and are not placed in discard until after resolution / cancel
                 // of their effects.
                 // Ruling: http://www.cardgamedb.com/forums/index.php?/topic/35981-the-annals-of-castle-black/
+                context.originalLocation = context.source.location;
                 context.source.controller.moveCard(context.source, 'being played');
             }
         };
@@ -168,6 +175,10 @@ const Costs = {
      * condition predicate function.
      */
     discardFromShadows: condition => CostBuilders.discardFromShadows.select(condition),
+    /**
+     * Cost that requires discarding the top card from the draw deck.
+     */
+    discardFromDeck: () => new DiscardFromDeckCost(),
     /**
      * Cost that will pay the reduceable gold cost associated with an event card
      * and place it in discard.
@@ -197,6 +208,11 @@ const Costs = {
      * destination card matching the passed condition predicate function.
      */
     moveTokenFromSelf: (type, amount, condition) => new MoveTokenFromSelfCost(type, amount, condition),
+    /**
+     * Cost that will move a fixed amount of power from the player's faction card to a
+     * destination card matching the passed condition predicate function.
+     */
+    movePowerFromFaction: ({amount, condition}) => new MovePowerFromFactionCost({amount, condition }),
     /**
      * Cost that will discard faction power matching the passed amount.
      */
@@ -321,7 +337,7 @@ const Costs = {
                 let reduction = context.player.getCostReduction('play', context.source);
                 let opponentObj = opponentFunc && opponentFunc(context);
                 let gold = opponentObj ? opponentObj.getSpendableGold({ playingType: 'play' }) : context.player.getSpendableGold({ playingType: 'play' });
-                let max = _.min([maxFunc(context), gold + reduction]);
+                let max = Math.min(maxFunc(context), gold + reduction);
 
                 context.game.queueStep(new XValuePrompt(minFunc(context), max, context, reduction));
 
@@ -351,7 +367,7 @@ const Costs = {
                 return context.source.tokens.gold >= minFunc(context);
             },
             resolve: function(context, result = { resolved: false }) {
-                let max = _.min([maxFunc(context), context.source.tokens.gold]);
+                let max = Math.min(maxFunc(context), context.source.tokens.gold);
 
                 context.game.queueStep(new XValuePrompt(minFunc(context), max, context));
 
@@ -360,7 +376,7 @@ const Costs = {
                 return result;
             },
             pay: function(context) {
-                context.source.modifyToken('gold', -context.xValue);
+                context.source.modifyToken(Tokens.gold, -context.xValue);
             }
         };
     }

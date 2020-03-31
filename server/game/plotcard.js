@@ -1,5 +1,3 @@
-const _ = require('underscore');
-
 const BaseCard = require('./basecard.js');
 const CardWhenRevealed = require('./cardwhenrevealed.js');
 
@@ -15,12 +13,13 @@ class PlotCard extends BaseCard {
     }
 
     whenRevealed(properties) {
+        const condition = properties.condition || (() => true);
         let whenClause = {
             when: {
-                onPlotRevealed: event => event.plot === this
+                onPlotRevealed: event => event.plot === this && condition()
             }
         };
-        let reaction = new CardWhenRevealed(this.game, this, _.extend(whenClause, properties));
+        let reaction = new CardWhenRevealed(this.game, this, Object.assign(whenClause, properties));
         this.abilities.reactions.push(reaction);
     }
 
@@ -63,7 +62,7 @@ class PlotCard extends BaseCard {
     getClaim() {
         let baseClaim = this.getPrintedClaim();
 
-        if(_.isNumber(this.claimSet)) {
+        if(typeof(this.claimSet) === 'number') {
             return this.claimSet;
         }
 

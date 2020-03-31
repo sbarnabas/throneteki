@@ -14,7 +14,8 @@ class EventWindow extends BaseStep {
             new SimpleStep(game, () => this.emitBaseEvent()),
             new SimpleStep(game, () => this.openWhenRevealedWindow()),
             new SimpleStep(game, () => this.openAbilityWindow('forcedreaction')),
-            new SimpleStep(game, () => this.openAbilityWindow('reaction'))
+            new SimpleStep(game, () => this.openAbilityWindow('reaction')),
+            new SimpleStep(game, () => this.postHandlerFunc())
         ]);
         this.postHandlerFunc = postHandlerFunc;
     }
@@ -31,8 +32,8 @@ class EventWindow extends BaseStep {
         return this.pipeline.handleCardClicked(player, card);
     }
 
-    onMenuCommand(player, arg, method) {
-        return this.pipeline.handleMenuCommand(player, arg, method);
+    onMenuCommand(player, arg, method, promptId) {
+        return this.pipeline.handleMenuCommand(player, arg, method, promptId);
     }
 
     cancelStep() {

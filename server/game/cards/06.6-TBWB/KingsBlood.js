@@ -1,13 +1,12 @@
-const _ = require('underscore');
-
 const DrawCard = require('../../drawcard.js');
+const {Tokens} = require('../../Constants');
 
 class KingsBlood extends DrawCard {
     setupCardAbilities(ability) {
         this.attachmentRestriction({ trait: ['Bastard', 'King'], controller: 'current' });
         this.action({
             title: 'Discard power from opponent\'s faction',
-            condition: () => this.hasToken('gold'),
+            condition: () => this.hasToken(Tokens.gold),
             phase: 'plot',
             cost: [
                 ability.costs.kneelParent(),
@@ -16,9 +15,9 @@ class KingsBlood extends DrawCard {
             handler: context => {
                 let gold = context.cardStateWhenInitiated.tokens.gold;
 
-                _.each(this.game.getOpponents(context.player), player => {
+                for(let player of this.game.getOpponents(context.player)) {
                     this.game.addPower(player, -gold);
-                });
+                }
 
                 this.game.addMessage('{0} kneels {1} and sacrifices {2} to discard {3} power from each opponent\'s faction card',
                     context.player, context.cardStateWhenInitiated.parent, this, gold);

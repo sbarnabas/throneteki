@@ -1,8 +1,6 @@
 /* global describe, beforeEach, jasmine */
 /* eslint no-invalid-this: 0 */
 
-const _ = require('underscore');
-
 require('./objectformatters.js');
 
 const DeckBuilder = require('./DeckBuilder');
@@ -122,6 +120,29 @@ var customMatchers = {
                 return result;
             }
         };
+    },
+    toAllowSelect: function(util, customEqualityMatchers) {
+        return {
+            compare: function(actual, expected) {
+                let result = {};
+                if(typeof expected !== 'string') {
+                    expected = expected.name;
+                }
+
+                let selectableCardNames = actual.player.getSelectableCards().map(card => card.name);
+                let includesCard = selectableCardNames.some(cardName => util.equals(cardName, expected, customEqualityMatchers));
+
+                result.pass = includesCard;
+
+                if(result.pass) {
+                    result.message = `Expected ${actual.name} not to be allowed to select ${expected} but it is.`;
+                } else {
+                    result.message = `Expected ${actual.name} to be allowed to select ${expected} but it isn't.`;
+                }
+
+                return result;
+            }
+        };
     }
 };
 
@@ -130,7 +151,7 @@ beforeEach(function() {
 });
 
 global.integration = function(options, definitions) {
-    if(_.isFunction(options)) {
+    if(typeof(options) === 'function') {
         definitions = options;
         options = {};
     }
@@ -145,9 +166,9 @@ global.integration = function(options, definitions) {
                 this[player.name + 'Object'] = this.game.getPlayerByName(player.name);
             }
 
-            _.each(ProxiedGameFlowWrapperMethods, method => {
+            for(let method of ProxiedGameFlowWrapperMethods) {
                 this[method] = (...args) => this.flow[method].apply(this.flow, args);
-            });
+            }
 
             this.buildDeck = function(faction, cards) {
                 return deckBuilder.buildDeck(faction, cards);

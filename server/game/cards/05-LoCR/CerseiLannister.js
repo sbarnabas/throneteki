@@ -3,15 +3,16 @@ const DrawCard = require('../../drawcard.js');
 class CerseiLannister extends DrawCard {
     setupCardAbilities(ability) {
         this.persistentEffect({
-            condition: () => this.game.isDuringChallenge({ challengeType: 'intrigue' }),
             match: this,
-            effect: ability.effects.doesNotKneelAsAttacker()
+            effect: ability.effects.doesNotKneelAsAttacker({ challengeType: 'intrigue' })
         });
         this.reaction({
             when: {
-                onCardsDiscarded: event => (
-                    this.controller !== event.player &&
-                    event.originalLocation === 'hand' &&
+                'onCardDiscarded:aggregate': event => (
+                    event.events.some(discardEvent => (
+                        discardEvent.cardStateWhenDiscarded.controller !== this.controller &&
+                        discardEvent.cardStateWhenDiscarded.location === 'hand'
+                    )) &&
                     this.allowGameAction('gainPower')
                 )
             },

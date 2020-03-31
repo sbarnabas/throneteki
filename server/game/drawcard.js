@@ -1,10 +1,7 @@
-const _ = require('underscore');
-
 const BaseCard = require('./basecard.js');
 const CardMatcher = require('./CardMatcher.js');
 const ReferenceCountedSetProperty = require('./PropertyTypes/ReferenceCountedSetProperty');
 const StandardPlayActions = require('./PlayActions/StandardActions');
-const AbilityDsl = require('./abilitydsl');
 
 const Icons = ['military', 'intrigue', 'power'];
 
@@ -15,14 +12,6 @@ class DrawCard extends BaseCard {
         this.dupes = [];
         this.attachments = [];
         this.childCards = [];
-        this.icons = new ReferenceCountedSetProperty();
-
-        for(let icon of this.getPrintedIcons()) {
-            this.icons.add(icon);
-        }
-
-        this.power = 0;
-        this.burnValue = 0;
         this.strengthModifier = 0;
         this.strengthMultiplier = 1;
         this.strengthSet = undefined;
@@ -31,14 +20,11 @@ class DrawCard extends BaseCard {
         this.kneeled = false;
         this.inChallenge = false;
         this.inDanger = false;
-        this.wasAmbush = false;
         this.saved = false;
         this.challengeOptions = new ReferenceCountedSetProperty();
         this.stealthLimit = 1;
         this.minCost = 0;
         this.eventPlacementLocation = 'discard pile';
-
-        this.setupDuplicateAbility(AbilityDsl);
     }
 
     createSnapshot() {
@@ -51,6 +37,7 @@ class DrawCard extends BaseCard {
         clone.dupes = this.dupes.map(dupe => dupe.createSnapshot());
         clone.factions = this.factions.clone();
         clone.icons = this.icons.clone();
+        clone.location = this.location;
         clone.losesAspects = this.losesAspects.clone();
         clone.keywords = this.keywords.clone();
         clone.kneeled = this.kneeled;
@@ -63,6 +50,18 @@ class DrawCard extends BaseCard {
         clone.traits = this.traits.clone();
 
         return clone;
+    }
+
+    setupCardTextProperties(ability) {
+        super.setupCardTextProperties(ability);
+
+        this.icons = new ReferenceCountedSetProperty();
+
+        for(let icon of this.getPrintedIcons()) {
+            this.icons.add(icon);
+        }
+
+        this.setupDuplicateAbility(ability);
     }
 
     setupDuplicateAbility(ability) {
@@ -180,28 +179,19 @@ class DrawCard extends BaseCard {
         return this.keywords.getShadowCost();
     }
 
-    getPower() {
-        return this.power;
-    }
-
     modifyStrength(amount, applying = true) {
-        if(this.isBurning && this.burnValue === 0 && this.getBoostedStrength(amount) <= 0) {
-            this.burnValue = amount;
-            this.game.killCharacter(this, { allowSave: false, isBurn: true });
-            this.game.queueSimpleStep(() => {
-                this.strengthModifier += amount;
-                this.burnValue = 0;
-            });
-            return;
-        }
-
         this.strengthModifier += amount;
 
         if(!this.strengthSet) {
-            this.game.raiseEvent('onCardStrengthChanged', {
+            let params = {
                 card: this,
                 amount: amount,
                 applying: applying
+            };
+            this.game.raiseEvent('onCardStrengthChanged', params, () => {
+                if(this.isBurning && this.getStrength() <= 0) {
+                    this.game.killCharacter(this, { allowSave: false, isBurn: true });
+                }
             });
         }
     }
@@ -224,6 +214,10 @@ class DrawCard extends BaseCard {
         return this.getPrintedNumberFor(this.cardData.strength);
     }
 
+    hasPrintedStrength() {
+        return !this.facedown && !!this.cardData.strength;
+    }
+
     getStrength() {
         return this.getBoostedStrength(0);
     }
@@ -235,7 +229,7 @@ class DrawCard extends BaseCard {
             return baseStrength;
         }
 
-        if(_.isNumber(this.strengthSet)) {
+        if(typeof(this.strengthSet) === 'number') {
             return this.strengthSet;
         }
 
@@ -269,11 +263,15 @@ class DrawCard extends BaseCard {
     }
 
     getIconsAdded() {
-        return _.difference(this.getIcons(), this.getPrintedIcons());
+        let icons = this.getIcons();
+        let printedIcons = this.getPrintedIcons();
+        return icons.filter(icon => !printedIcons.includes(icon));
     }
 
     getIconsRemoved() {
-        return _.difference(this.getPrintedIcons(), this.getIcons());
+        let icons = this.getIcons();
+        let printedIcons = this.getPrintedIcons();
+        return printedIcons.filter(icon => !icons.includes(icon));
     }
 
     getNumberOfIcons() {
@@ -286,29 +284,6 @@ class DrawCard extends BaseCard {
 
     removeIcon(icon) {
         this.icons.remove(icon);
-    }
-
-    modifyPower(power) {
-        let action = power < 0 ? 'discardPower' : 'gainPower';
-        this.game.applyGameAction(action, this, card => {
-            let oldPower = card.power;
-
-            card.power += power;
-
-            if(card.power < 0) {
-                card.power = 0;
-            }
-
-            if(power > 0) {
-                this.game.raiseEvent('onCardPowerGained', { card: this, power: card.power - oldPower });
-            }
-
-            this.game.checkWinCondition(this.controller);
-        });
-    }
-
-    needsStealthTarget() {
-        return this.isStealth() && !this.stealthTarget;
     }
 
     canUseStealthToBypass(targetCard) {
@@ -331,7 +306,7 @@ class DrawCard extends BaseCard {
      */
     attachmentRestriction(...restrictions) {
         this.attachmentRestrictions = restrictions.map(restriction => {
-            if(_.isFunction(restriction)) {
+            if(typeof(restriction) === 'function') {
                 return restriction;
             }
 
@@ -389,13 +364,11 @@ class DrawCard extends BaseCard {
     getPlayActions() {
         return StandardPlayActions
             .concat(this.abilities.playActions)
-            .concat(_.filter(this.abilities.actions, action => !action.allowMenu()));
+            .concat(this.abilities.actions.filter(action => !action.allowMenu()));
     }
 
     leavesPlay() {
         this.kneeled = false;
-        this.power = 0;
-        this.wasAmbush = false;
         this.new = false;
         this.clearDanger();
         this.resetForChallenge();
@@ -409,20 +382,36 @@ class DrawCard extends BaseCard {
         this.inChallenge = false;
     }
 
-    canDeclareAsAttacker(challengeType) {
-        return this.allowGameAction('declareAsAttacker') && this.canDeclareAsParticipant(challengeType);
+    kneelsAsAttacker(challengeType) {
+        const keys = [
+            'doesNotKneelAsAttacker.any',
+            `doesNotKneelAsAttacker.${challengeType}`
+        ];
+
+        return keys.every(key => !this.challengeOptions.contains(key));
     }
 
-    canDeclareAsDefender(challengeType) {
-        return this.allowGameAction('declareAsDefender') && this.canDeclareAsParticipant(challengeType);
+    kneelsAsDefender(challengeType) {
+        const keys = [
+            'doesNotKneelAsDefender.any',
+            `doesNotKneelAsDefender.${challengeType}`
+        ];
+
+        return keys.every(key => !this.challengeOptions.contains(key));
     }
 
-    canDeclareAsParticipant(challengeType) {
+    canDeclareAsParticipant({ attacking, challengeType }) {
+        let canKneelForChallenge =
+            attacking && !this.kneeled && !this.kneelsAsAttacker(challengeType) ||
+            !attacking && !this.kneeled && !this.kneelsAsDefender(challengeType) ||
+            !this.kneeled && this.allowGameAction('kneel') ||
+            this.kneeled && this.challengeOptions.contains('canBeDeclaredWhileKneeling');
+
         return (
             this.canParticipateInChallenge() &&
             this.location === 'play area' &&
             !this.stealth &&
-            (!this.kneeled || this.challengeOptions.contains('canBeDeclaredWhileKneeling')) &&
+            canKneelForChallenge &&
             (this.hasIcon(challengeType) || this.challengeOptions.contains('canBeDeclaredWithoutIcon'))
         );
     }
@@ -450,10 +439,6 @@ class DrawCard extends BaseCard {
 
     canBeSaved() {
         return this.allowGameAction('save');
-    }
-
-    canGainPower() {
-        return this.allowGameAction('gainPower');
     }
 
     markAsInDanger() {
@@ -488,8 +473,7 @@ class DrawCard extends BaseCard {
 
                 return dupe.getSummary(activePlayer);
             }),
-            kneeled: this.kneeled,
-            power: this.power
+            kneeled: this.kneeled
         };
 
         if(baseSummary.facedown) {

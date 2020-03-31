@@ -1,6 +1,11 @@
 class SimultaneousEvents {
     constructor() {
         this.childEvents = [];
+        this.postHandlers = [];
+    }
+
+    get activeChildEvents() {
+        return this.childEvents.filter(event => !event.cancelled);
     }
 
     addChildEvent(event) {
@@ -8,9 +13,13 @@ class SimultaneousEvents {
     }
 
     emitTo(emitter, suffix) {
-        for(let event of this.childEvents) {
+        for(let event of this.activeChildEvents) {
             event.emitTo(emitter, suffix);
         }
+    }
+
+    get resolved() {
+        return this.childEvents.every(event => event.resolved);
     }
 
     get cancelled() {
@@ -18,7 +27,7 @@ class SimultaneousEvents {
     }
 
     cancel() {
-        for(let event of this.childEvents) {
+        for(let event of this.activeChildEvents) {
             event.cancel();
         }
 
@@ -28,29 +37,38 @@ class SimultaneousEvents {
     }
 
     executeHandler() {
-        for(let event of this.childEvents) {
+        for(let event of this.activeChildEvents) {
             event.executeHandler();
         }
     }
 
     executePostHandler() {
-        for(let event of this.childEvents) {
+        for(let event of this.activeChildEvents) {
             event.executePostHandler();
+        }
+
+        for(let postHandler of this.postHandlers) {
+            postHandler(this);
         }
     }
 
     getConcurrentEvents() {
-        return this.childEvents.reduce((concurrentEvents, event) => {
+        return this.activeChildEvents.reduce((concurrentEvents, event) => {
             return concurrentEvents.concat(event.getConcurrentEvents());
         }, []);
     }
 
     getPrimaryEvent() {
-        return this.childEvents[0];
+        return this.activeChildEvents[0];
+    }
+
+    thenExecute(func) {
+        this.postHandlers.push(func);
+        return this;
     }
 
     toString() {
-        return `simultaneous(${this.childEvents.map(e => e.toString()).join(', ')})`;
+        return `simultaneous(${this.activeChildEvents.map(e => e.toString()).join(', ')})`;
     }
 }
 

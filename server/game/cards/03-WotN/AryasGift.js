@@ -15,12 +15,16 @@ class AryasGift extends DrawCard {
                 let attachment = context.target;
                 let oldParent = attachment.parent;
 
-                this.game.promptForSelect(this.controller, {
-                    cardCondition: card => card.getType() === 'character' && card.controller === this.controller &&
-                        card !== oldParent && this.controller.canAttach(attachment, card) && card.location === 'play area',
+                this.game.promptForSelect(context.player, {
+                    cardCondition: card => (
+                        card.getType() === 'character' &&
+                        card.controller === context.player &&
+                        card !== oldParent &&
+                        attachment.controller.canAttach(attachment, card) &&
+                        card.location === 'play area'
+                    ),
                     onSelect: (player, card) => this.moveAttachment(player, card, attachment, oldParent)
                 });
-
             }
         });
     }

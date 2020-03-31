@@ -1,5 +1,3 @@
-const _ = require('underscore');
-
 const DrawCard = require('../../drawcard.js');
 
 class RenlyBaratheon extends DrawCard {
@@ -12,21 +10,22 @@ class RenlyBaratheon extends DrawCard {
 
         this.reaction({
             when: {
-                onInsight: event =>
+                onCardsDrawn: event =>
+                    event.reason === 'insight' &&
                     event.source.controller === this.controller &&
-                    event.card.isLoyal() &&
+                    event.cards[0].isLoyal() &&
                     this.controller.canDraw()
             },
-            cost: ability.costs.revealSpecific(context => context.event.card),
+            cost: ability.costs.revealSpecific(context => context.event.cards[0]),
             handler: context => {
                 this.controller.drawCardsToHand(1);
-                this.game.addMessage('{0} uses {1} to draw 1 card', this.controller, this, context.event.card);
+                this.game.addMessage('{0} uses {1} to draw 1 card', context.player, this);
             }
         });
     }
 
     anyOpponentControlsKing() {
-        return _.any(this.game.getPlayers(), player => {
+        return this.game.getPlayers().some(player => {
             if(player === this.controller) {
                 return false;
             }

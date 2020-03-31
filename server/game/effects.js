@@ -1,13 +1,14 @@
-const _ = require('underscore');
-
 const AbilityLimit = require('./abilitylimit.js');
 const AllowedChallenge = require('./AllowedChallenge');
+const CardMatcher = require('./CardMatcher');
+const CardTextDefinition = require('./CardTextDefinition');
 const CostReducer = require('./costreducer.js');
 const PlayableLocation = require('./playablelocation.js');
 const CannotRestriction = require('./cannotrestriction.js');
 const ChallengeRestriction = require('./ChallengeRestriction.js');
 const ImmunityRestriction = require('./immunityrestriction.js');
 const GoldSource = require('./GoldSource.js');
+const {Tokens} = require('./Constants');
 
 function cannotEffect(type) {
     return function(predicate) {
@@ -39,11 +40,17 @@ function losesAspectEffect(aspect) {
 function challengeOptionEffect(key) {
     return function() {
         return {
-            apply: function(card) {
+            apply: function(card, context) {
                 card.challengeOptions.add(key);
+                if(context.game.currentChallenge) {
+                    context.game.currentChallenge.calculateStrength();
+                }
             },
-            unapply: function(card) {
+            unapply: function(card, context) {
                 card.challengeOptions.remove(key);
+                if(context.game.currentChallenge) {
+                    context.game.currentChallenge.calculateStrength();
+                }
             }
         };
     };
@@ -58,6 +65,32 @@ function dominanceOptionEffect(key) {
             unapply: function(card) {
                 card.dominanceOptions.remove(key);
             }
+        };
+    };
+}
+
+function dynamicCardModifier(propName) {
+    return function(calculateOrValue) {
+        const isStateDependent = (typeof calculateOrValue === 'function');
+        const calculate = isStateDependent ? calculateOrValue : () => calculateOrValue;
+
+        return {
+            apply: function(card, context) {
+                context[propName] = context[propName] || {};
+                context[propName][card.uuid] = calculate(card, context) || 0;
+                card[propName] += context[propName][card.uuid];
+            },
+            reapply: function(card, context) {
+                let currentInitiative = context[propName][card.uuid];
+                let newInitiative = calculate(card, context) || 0;
+                context[propName][card.uuid] = newInitiative;
+                card[propName] += newInitiative - currentInitiative;
+            },
+            unapply: function(card, context) {
+                card[propName] -= context[propName][card.uuid];
+                delete context[propName][card.uuid];
+            },
+            isStateDependent
         };
     };
 }
@@ -97,8 +130,12 @@ const Effects = {
     cannotBeDeclaredAsAttacker: cannotEffect('declareAsAttacker'),
     cannotBeDeclaredAsDefender: cannotEffect('declareAsDefender'),
     cannotParticipate: cannotEffect('participateInChallenge'),
-    doesNotKneelAsAttacker: challengeOptionEffect('doesNotKneelAsAttacker'),
-    doesNotKneelAsDefender: challengeOptionEffect('doesNotKneelAsDefender'),
+    doesNotKneelAsAttacker: function({ challengeType = 'any' } = {}) {
+        return challengeOptionEffect(`doesNotKneelAsAttacker.${challengeType}`)();
+    },
+    doesNotKneelAsDefender: function({ challengeType = 'any' } = {}) {
+        return challengeOptionEffect(`doesNotKneelAsDefender.${challengeType}`)();
+    },
     consideredToBeAttacking: function() {
         return {
             apply: function(card, context) {
@@ -107,17 +144,25 @@ const Effects = {
                     challenge.addAttacker(card);
                 }
             },
+            reapply: function(card, context) {
+                let challenge = context.game.currentChallenge;
+                if(card.canParticipateInChallenge() && !challenge.isAttacking(card)) {
+                    challenge.addAttacker(card);
+                }
+            },
             unapply: function(card, context) {
                 let challenge = context.game.currentChallenge;
 
-                if(challenge && challenge.isAttacking(card)) {
+                if(challenge && challenge.isAttacking(card) && !challenge.isDeclared(card)) {
                     challenge.removeFromChallenge(card);
                 }
-            }
+            },
+            isStateDependent: true
         };
     },
     canBeDeclaredWithoutIcon: challengeOptionEffect('canBeDeclaredWithoutIcon'),
     canBeDeclaredWhileKneeling: challengeOptionEffect('canBeDeclaredWhileKneeling'),
+    mustBeDeclaredAsAttacker: challengeOptionEffect('mustBeDeclaredAsAttacker'),
     mustBeDeclaredAsDefender: challengeOptionEffect('mustBeDeclaredAsDefender'),
     restrictAttachmentsTo: function(trait) {
         return Effects.addKeyword(`No attachments except <i>${trait}</i>`);
@@ -185,66 +230,10 @@ const Effects = {
             isStateDependent: true
         };
     },
-    modifyGold: function(value) {
-        return {
-            apply: function(card) {
-                card.goldModifier += value;
-            },
-            unapply: function(card) {
-                card.goldModifier -= value;
-            }
-        };
-    },
-    modifyInitiative: function(value) {
-        return {
-            apply: function(card) {
-                card.initiativeModifier += value;
-            },
-            unapply: function(card) {
-                card.initiativeModifier -= value;
-            }
-        };
-    },
-    dynamicInitiative: function(calculate) {
-        return {
-            apply: function(card, context) {
-                context.dynamicInitiative = context.dynamicInitiative || {};
-                context.dynamicInitiative[card.uuid] = calculate(card, context) || 0;
-                card.initiativeModifier += context.dynamicInitiative[card.uuid];
-            },
-            reapply: function(card, context) {
-                let currentInitiative = context.dynamicInitiative[card.uuid];
-                let newInitiative = calculate(card, context) || 0;
-                context.dynamicInitiative[card.uuid] = newInitiative;
-                card.initiativeModifier += newInitiative - currentInitiative;
-            },
-            unapply: function(card, context) {
-                card.initiativeModifier -= context.dynamicInitiative[card.uuid];
-                delete context.dynamicInitiative[card.uuid];
-            },
-            isStateDependent: true
-        };
-    },
-    modifyReserve: function(value) {
-        return {
-            apply: function(card) {
-                card.reserveModifier += value;
-            },
-            unapply: function(card) {
-                card.reserveModifier -= value;
-            }
-        };
-    },
-    modifyClaim: function(value) {
-        return {
-            apply: function(card) {
-                card.claimModifier += value;
-            },
-            unapply: function(card) {
-                card.claimModifier -= value;
-            }
-        };
-    },
+    modifyGold: dynamicCardModifier('goldModifier'),
+    modifyInitiative: dynamicCardModifier('initiativeModifier'),
+    modifyReserve: dynamicCardModifier('reserveModifier'),
+    modifyClaim: dynamicCardModifier('claimModifier'),
     setClaim: function(value) {
         return {
             apply: function(card) {
@@ -253,26 +242,6 @@ const Effects = {
             unapply: function(card) {
                 card.claimSet = undefined;
             }
-        };
-    },
-    dynamicClaim: function(calculate) {
-        return {
-            apply: function(card, context) {
-                context.dynamicClaim = context.dynamicClaim || {};
-                context.dynamicClaim[card.uuid] = calculate(card, context) || 0;
-                card.claimModifier += context.dynamicClaim[card.uuid];
-            },
-            reapply: function(card, context) {
-                let currentClaim = context.dynamicClaim[card.uuid];
-                let newClaim = calculate(card, context) || 0;
-                context.dynamicClaim[card.uuid] = newClaim;
-                card.claimModifier += newClaim - currentClaim;
-            },
-            unapply: function(card, context) {
-                card.claimModifier -= context.dynamicClaim[card.uuid];
-                delete context.dynamicClaim[card.uuid];
-            },
-            isStateDependent: true
         };
     },
     preventPlotModifier: function(modifier) {
@@ -349,16 +318,24 @@ const Effects = {
         return {
             apply: function(card, context) {
                 context.dynamicIcons = context.dynamicIcons || {};
-                context.dynamicIcons[card.uuid] = iconsFunc(card, context) || 0;
-                _.each(context.dynamicIcons[card.uuid], icon => card.addIcon(icon));
+                context.dynamicIcons[card.uuid] = iconsFunc(card, context) || [];
+                for(let icon of context.dynamicIcons[card.uuid]) {
+                    card.addIcon(icon);
+                }
             },
             reapply: function(card, context) {
-                _.each(context.dynamicIcons[card.uuid], icon => card.removeIcon(icon));
+                for(let icon of context.dynamicIcons[card.uuid]) {
+                    card.removeIcon(icon);
+                }
                 context.dynamicIcons[card.uuid] = iconsFunc(card, context);
-                _.each(context.dynamicIcons[card.uuid], icon => card.addIcon(icon));
+                for(let icon of context.dynamicIcons[card.uuid]) {
+                    card.addIcon(icon);
+                }
             },
             unapply: function(card, context) {
-                _.each(context.dynamicIcons[card.uuid], icon => card.removeIcon(icon));
+                for(let icon of context.dynamicIcons[card.uuid]) {
+                    card.removeIcon(icon);
+                }
                 delete context.dynamicIcons[card.uuid];
             },
             isStateDependent: true
@@ -388,16 +365,24 @@ const Effects = {
         return {
             apply: function(card, context) {
                 context.dynamicKeywords = context.dynamicKeywords || {};
-                context.dynamicKeywords[card.uuid] = keywordsFunc(card, context) || 0;
-                _.each(context.dynamicKeywords[card.uuid], keyword => card.addKeyword(keyword));
+                context.dynamicKeywords[card.uuid] = keywordsFunc(card, context) || [];
+                for(let keyword of context.dynamicKeywords[card.uuid]) {
+                    card.addKeyword(keyword);
+                }
             },
             reapply: function(card, context) {
-                _.each(context.dynamicKeywords[card.uuid], icon => card.removeKeyword(icon));
+                for(let keyword of context.dynamicKeywords[card.uuid]) {
+                    card.removeKeyword(keyword);
+                }
                 context.dynamicKeywords[card.uuid] = keywordsFunc(card, context);
-                _.each(context.dynamicKeywords[card.uuid], keyword => card.addKeyword(keyword));
+                for(let keyword of context.dynamicKeywords[card.uuid]) {
+                    card.addKeyword(keyword);
+                }
             },
             unapply: function(card, context) {
-                _.each(context.dynamicKeywords[card.uuid], keyword => card.removeKeyword(keyword));
+                for(let keyword of context.dynamicKeywords[card.uuid]) {
+                    card.removeKeyword(keyword);
+                }
                 delete context.dynamicKeywords[card.uuid];
             },
             isStateDependent: true
@@ -416,10 +401,14 @@ const Effects = {
     addMultipleKeywords: function(keywords) {
         return {
             apply: function(card) {
-                _.each(keywords, keyword => card.addKeyword(keyword));
+                for(let keyword of keywords) {
+                    card.addKeyword(keyword);
+                }
             },
             unapply: function(card) {
-                _.each(keywords, keyword => card.removeKeyword(keyword));
+                for(let keyword of keywords) {
+                    card.removeKeyword(keyword);
+                }
             }
         };
     },
@@ -491,12 +480,12 @@ const Effects = {
     },
     poison: {
         apply: function(card, context) {
-            card.modifyToken('poison', 1);
+            card.modifyToken(Tokens.poison, 1);
             context.game.addMessage('{0} uses {1} to place 1 poison token on {2}', context.source.controller, context.source, card);
         },
         unapply: function(card, context) {
-            if(card.location === 'play area' && card.hasToken('poison')) {
-                card.modifyToken('poison', -1);
+            if(card.location === 'play area' && card.hasToken(Tokens.poison)) {
+                card.modifyToken(Tokens.poison, -1);
                 card.controller.killCharacter(card);
                 context.game.addMessage('{0} uses {1} to kill {2} at the end of the phase', context.source.controller, context.source, card);
             }
@@ -532,7 +521,7 @@ const Effects = {
             },
             unapply: function(card, context) {
                 if(card.location === 'play area' && context.discardIfStillInPlay.includes(card)) {
-                    context.discardIfStillInPlay = _.reject(context.discardIfStillInPlay, c => c === card);
+                    context.discardIfStillInPlay = context.discardIfStillInPlay.filter(c => c !== card);
                     card.controller.discardCard(card, allowSave);
                     context.game.addMessage('{0} discards {1} at the end of the phase because of {2}', context.source.controller, card, context.source);
                 }
@@ -547,7 +536,7 @@ const Effects = {
             },
             unapply: function(card, context) {
                 if(card.location === 'play area' && context.killIfStillInPlay.includes(card)) {
-                    context.killIfStillInPlay = _.reject(context.killIfStillInPlay, c => c === card);
+                    context.killIfStillInPlay = context.killIfStillInPlay.filter(c => c !== card);
                     card.controller.killCharacter(card, allowSave);
                     context.game.addMessage('{0} kills {1} at the end of the phase because of {2}', context.source.controller, card, context.source);
                 }
@@ -562,7 +551,7 @@ const Effects = {
             },
             unapply: function(card, context) {
                 if(card.location === 'play area' && context.moveToDeadPileIfStillInPlay.includes(card)) {
-                    context.moveToDeadPileIfStillInPlay = _.reject(context.moveToDeadPileIfStillInPlay, c => c === card);
+                    context.moveToDeadPileIfStillInPlay = context.moveToDeadPileIfStillInPlay.filter(c => c !== card);
                     card.owner.moveCard(card, 'dead pile');
                     context.game.addMessage('{0} moves {1} to its owner\'s dead pile at the end of the phase because of {2}', context.source.controller, card, context.source);
                 }
@@ -577,14 +566,14 @@ const Effects = {
             },
             unapply: function(card, context) {
                 if(['play area', 'duplicate'].includes(card.location) && context.moveToBottomOfDeckIfStillInPlay.includes(card)) {
-                    context.moveToBottomOfDeckIfStillInPlay = _.reject(context.moveToBottomOfDeckIfStillInPlay, c => c === card);
+                    context.moveToBottomOfDeckIfStillInPlay = context.moveToBottomOfDeckIfStillInPlay.filter(c => c !== card);
                     card.owner.moveCardToBottomOfDeck(card, allowSave);
                     context.game.addMessage('{0} moves {1} to the bottom of its owner\'s deck at the end of the phase because of {2}', context.source.controller, card, context.source);
                 }
             }
         };
     },
-    returnToHandIfStillInPlay: function(allowSave = false) {
+    returnToHandIfStillInPlay: function(allowSave = false, duration = 'phase') {
         return {
             apply: function(card, context) {
                 context.returnToHandIfStillInPlay = context.returnToHandIfStillInPlay || [];
@@ -592,9 +581,9 @@ const Effects = {
             },
             unapply: function(card, context) {
                 if(card.location === 'play area' && context.returnToHandIfStillInPlay.includes(card)) {
-                    context.returnToHandIfStillInPlay = _.reject(context.returnToHandIfStillInPlay, c => c === card);
+                    context.returnToHandIfStillInPlay = context.returnToHandIfStillInPlay.filter(c => c !== card);
                     card.controller.returnCardToHand(card, allowSave);
-                    context.game.addMessage('{0} returns {1} to hand at the end of the phase because of {2}', context.source.controller, card, context.source);
+                    context.game.addMessage('{0} returns {1} to hand at the end of the {2} because of {3}', context.source.controller, card, duration, context.source);
                 }
             }
         };
@@ -607,7 +596,7 @@ const Effects = {
             },
             unapply: function(card, context) {
                 if(card.location === 'play area' && context.shuffleIntoDeckIfStillInPlay.includes(card)) {
-                    context.shuffleIntoDeckIfStillInPlay = _.reject(context.shuffleIntoDeckIfStillInPlay, c => c === card);
+                    context.shuffleIntoDeckIfStillInPlay = context.shuffleIntoDeckIfStillInPlay.filter(c => c !== card);
                     card.owner.shuffleCardIntoDeck(card, allowSave);
                     context.game.addMessage('{0} shuffles {1} into their deck at the end of the phase because of {2}', card.owner, card, context.source);
                 }
@@ -616,13 +605,21 @@ const Effects = {
     },
     removeFromGame: function() {
         return {
-            apply: function(card) {
+            apply: function(card, context) {
+                context.removeFromGame = context.removeFromGame || {};
+                context.removeFromGame[card.uuid] = card.location;
                 card.owner.removeCardFromGame(card);
             },
             unapply: function(card, context) {
                 if(card.location === 'out of game') {
-                    card.owner.putIntoPlay(card, 'play', { isEffectExpiration: true });
+                    let originalLocation = context.removeFromGame[card.uuid];
+                    if(originalLocation === 'play area') {
+                        card.owner.putIntoPlay(card, 'play', { isEffectExpiration: true });
+                    } else {
+                        card.owner.moveCard(card, originalLocation);
+                    }
                     context.game.addMessage('{0} is put into play because of {1}', card, context.source);
+                    delete context.removeFromGame[card.uuid];
                 }
             }
         };
@@ -640,13 +637,17 @@ const Effects = {
         };
     },
     immuneTo: function(cardCondition) {
-        let restriction = new ImmunityRestriction(cardCondition);
         return {
-            apply: function(card) {
+            apply: function(card, context) {
+                let restriction = new ImmunityRestriction(cardCondition, context.source);
+                context.immuneTo = context.immuneTo || {};
+                context.immuneTo[card.uuid] = restriction;
                 card.addAbilityRestriction(restriction);
             },
-            unapply: function(card) {
+            unapply: function(card, context) {
+                let restriction = context.immuneTo[card.uuid];
                 card.removeAbilityRestriction(restriction);
+                delete context.immuneTo[card.uuid];
             }
         };
     },
@@ -661,6 +662,11 @@ const Effects = {
                 context.game.revertControl(card, context.source);
             }
         };
+    },
+    gainText: function(configureText) {
+        const definition = new CardTextDefinition();
+        configureText(definition);
+        return definition;
     },
     cannotMarshalOrPutIntoPlayByTitle: function(name) {
         let restriction = card => card.name === name;
@@ -681,9 +687,13 @@ const Effects = {
                 player.playCardRestrictions.push(restriction);
             },
             unapply: function(player) {
-                player.playCardRestrictions = _.reject(player.playCardRestrictions, r => r === restriction);
+                player.playCardRestrictions = player.playCardRestrictions.filter(r => r !== restriction);
             }
         };
+    },
+    cannotSetup: function(condition = () => true) {
+        let restriction = (card, playingType) => playingType === 'setup' && condition(card);
+        return this.cannotPutIntoPlay(restriction);
     },
     cannotBeBypassedByStealth: cannotEffect('bypassByStealth'),
     cannotBeDiscarded: cannotEffect('discard'),
@@ -691,7 +701,10 @@ const Effects = {
     cannotBeStood: cannotEffect('stand'),
     cannotBeKilled: cannotEffect('kill'),
     cannotBeSaved: cannotEffect('save'),
+    cannotBePutIntoShadows: cannotEffect('putIntoShadows'),
+    cannotBeRemovedFromGame: cannotEffect('removeFromGame'),
     cannotBeReturnedToHand: cannotEffect('returnToHand'),
+    cannotBeSacrificed: cannotEffect('sacrifice'),
     cannotIncreaseStrength: cannotEffect('increaseStrength'),
     cannotDecreaseStrength: cannotEffect('decreaseStrength'),
     cannotGainPower: cannotEffect('gainPower'),
@@ -759,7 +772,7 @@ const Effects = {
                 player.triggerRestrictions.push(restriction);
             },
             unapply: function(player) {
-                player.triggerRestrictions = _.reject(player.triggerRestrictions, r => r === restriction);
+                player.triggerRestrictions = player.triggerRestrictions.filter(r => r !== restriction);
             }
         };
     },
@@ -951,14 +964,26 @@ const Effects = {
         };
     },
     canMarshal: function(predicate) {
-        let playableLocation = new PlayableLocation('marshal', predicate);
+        let playableLocation = new PlayableLocation('marshal', CardMatcher.createMatcher(predicate));
         return {
             targetType: 'player',
             apply: function(player) {
                 player.playableLocations.push(playableLocation);
             },
             unapply: function(player) {
-                player.playableLocations = _.reject(player.playableLocations, l => l === playableLocation);
+                player.playableLocations = player.playableLocations.filter(l => l !== playableLocation);
+            }
+        };
+    },
+    canMarshalIntoShadows: function(predicate) {
+        let playableLocation = new PlayableLocation('marshalIntoShadows', CardMatcher.createMatcher(predicate));
+        return {
+            targetType: 'player',
+            apply: function(player) {
+                player.playableLocations.push(playableLocation);
+            },
+            unapply: function(player) {
+                player.playableLocations = player.playableLocations.filter(l => l !== playableLocation);
             }
         };
     },
@@ -972,7 +997,7 @@ const Effects = {
                 player.playableLocations.push(playableLocation);
             },
             unapply: function(player, context) {
-                player.playableLocations = _.reject(player.playableLocations, l => l === context.canPlayFromOwn[player.name]);
+                player.playableLocations = player.playableLocations.filter(l => l !== context.canPlayFromOwn[player.name]);
                 delete context.canPlayFromOwn[player.name];
             }
         };
@@ -996,7 +1021,7 @@ const Effects = {
                 player.standPhaseRestrictions.push(restriction);
             },
             unapply: function(player) {
-                player.standPhaseRestrictions = _.reject(player.standPhaseRestrictions, r => r === restriction);
+                player.standPhaseRestrictions = player.standPhaseRestrictions.filter(r => r !== restriction);
             }
         };
     },
@@ -1011,7 +1036,9 @@ const Effects = {
             },
             unapply: function(player, context) {
                 if(context.reducers.length > 0) {
-                    _.each(context.reducers, reducer => player.removeCostReducer(reducer));
+                    for(let reducer of context.reducers) {
+                        player.removeCostReducer(reducer);
+                    }
                 }
             }
         };
@@ -1031,7 +1058,9 @@ const Effects = {
             },
             unapply: function(player, context) {
                 if(context.reducers.length > 0) {
-                    _.each(context.reducers, reducer => player.removeCostReducer(reducer));
+                    for(let reducer of context.reducers) {
+                        player.removeCostReducer(reducer);
+                    }
                 }
             }
         };
@@ -1062,6 +1091,9 @@ const Effects = {
     reduceNextMarshalledAmbushedOrOutOfShadowsCardCost: function(amount, match) {
         return this.reduceNextCardCost(['marshal', 'ambush', 'outOfShadows'], amount, match);
     },
+    reduceNextOutOfShadowsCardCost: function(amount, match) {
+        return this.reduceNextCardCost('outOfShadows', amount, match);
+    },
     reduceFirstCardCostEachRound: function(playingTypes, amount, match) {
         return this.reduceCost({
             playingTypes: playingTypes,
@@ -1078,6 +1110,9 @@ const Effects = {
     },
     reduceFirstMarshalledOrPlayedCardCostEachRound: function(amount, match) {
         return this.reduceFirstCardCostEachRound(['marshal', 'play'], amount, match);
+    },
+    reduceFirstOutOfShadowsCardCostEachRound: function(amount, match) {
+        return this.reduceFirstCardCostEachRound(['outOfShadows'], amount, match);
     },
     reduceAmbushCardCost: function(amount, match) {
         return this.reduceCost({
@@ -1118,7 +1153,7 @@ const Effects = {
                 player.mustChooseAsClaim.push(card);
             },
             unapply: function(player) {
-                player.mustChooseAsClaim = _.reject(player.mustChooseAsClaim, c => c === card);
+                player.mustChooseAsClaim = player.mustChooseAsClaim.filter(c => c !== card);
             }
         };
     },
@@ -1162,6 +1197,55 @@ const Effects = {
             },
             unapply: function(player) {
                 player.multipleOpponentClaim = player.multipleOpponentClaim.filter(c => c === claimType);
+            }
+        };
+    },
+    lookAtTopCard: function() {
+        return {
+            targetType: 'player',
+            apply: function(player, context) {
+                let revealFunc = (card, viewingPlayer) => player.drawDeck.length > 0 && player.drawDeck[0] === card && card.controller === player && viewingPlayer === player;
+
+                context.lookAtTopCard = context.lookAtTopCard || {};
+                context.lookAtTopCard[player.name] = revealFunc;
+                context.game.cardVisibility.addRule(revealFunc);
+            },
+            unapply: function(player, context) {
+                let revealFunc = context.lookAtTopCard[player.name];
+
+                context.game.cardVisibility.removeRule(revealFunc);
+                delete context.lookAtTopCard[player.name];
+            }
+        };
+    },
+    revealTopCard: function() {
+        return {
+            targetType: 'player',
+            apply: function(player, context) {
+                let revealFunc = (card) => player.drawDeck.length > 0 && player.drawDeck[0] === card;
+
+                context.revealTopCard = context.revealTopCard || {};
+                context.revealTopCard[player.name] = revealFunc;
+                context.game.cardVisibility.addRule(revealFunc);
+                player.flags.add('revealTopCard');
+            },
+            unapply: function(player, context) {
+                let revealFunc = context.revealTopCard[player.name];
+
+                context.game.cardVisibility.removeRule(revealFunc);
+                player.flags.remove('revealTopCard');
+                delete context.revealTopCard[player.name];
+            }
+        };
+    },
+    cannotRevealPlot: function() {
+        return {
+            targetType: 'player',
+            apply: function(player) {
+                player.flags.add('cannotRevealPlot');
+            },
+            unapply: function(player) {
+                player.flags.remove('cannotRevealPlot');
             }
         };
     },

@@ -11,8 +11,9 @@ describe('AbilityResolver', function() {
         this.game.reportError.and.callFake(error => {
             throw error;
         });
-        this.ability = jasmine.createSpyObj('ability', ['incrementLimit', 'isAction', 'isCardAbility', 'isForcedAbility', 'isPlayableEventAbility', 'needsChooseOpponent', 'resolveCosts', 'payCosts', 'resolveTargets', 'executeHandler']);
+        this.ability = jasmine.createSpyObj('ability', ['incrementLimit', 'isAction', 'isCardAbility', 'isForcedAbility', 'isPlayableEventAbility', 'needsChoosePlayer', 'outputMessage', 'resolveCosts', 'payCosts', 'resolveTargets', 'executeHandler']);
         this.ability.isCardAbility.and.returnValue(true);
+        this.ability.resolveCosts.and.returnValue([]);
         this.ability.resolveTargets.and.returnValue([]);
         this.player = jasmine.createSpyObj('player', ['moveCard']);
         this.source = jasmine.createSpyObj('source', ['createSnapshot', 'getType']);
@@ -252,7 +253,7 @@ describe('AbilityResolver', function() {
 
                 describe('and the targets were not chosen', function() {
                     beforeEach(function() {
-                        this.targetResult.value = null;
+                        this.targetResult.cancelled = true;
                         this.resolver.continue();
                     });
 

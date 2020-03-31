@@ -2,6 +2,9 @@ const DrawCard = require('../../drawcard.js');
 
 class RubyOfRhllor extends DrawCard {
     setupCardAbilities() {
+        this.attachmentRestriction(
+            { trait: 'R\'hllor' }
+        );
         this.reaction({
             when: {
                 afterChallenge: event =>
@@ -9,14 +12,11 @@ class RubyOfRhllor extends DrawCard {
                     event.challenge.winner === this.controller &&
                     event.challenge.isAttacking(this.parent)
             },
-            handler: () => {
-                this.game.promptWithMenu(this.controller, this, {
-                    activePrompt: {
-                        menuTitle: 'Name a card',
-                        controls: [
-                            { type: 'card-name', command: 'menuButton', method: 'selectCardName' }
-                        ]
-                    }
+            handler: context => {
+                this.game.promptForCardName({
+                    player: context.player,
+                    onSelect: (player, cardName) => this.selectCardName(player, cardName),
+                    source: context.source
                 });
             }
         });
@@ -32,8 +32,6 @@ class RubyOfRhllor extends DrawCard {
         }
 
         loser.discardCards(matchingCards);
-
-        return true;
     }
 }
 

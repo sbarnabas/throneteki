@@ -1,5 +1,3 @@
-const _ = require('underscore');
-
 const BaseStep = require('./basestep.js');
 const Event = require('../event');
 const GamePipeline = require('../gamepipeline.js');
@@ -22,7 +20,8 @@ class AbilityResolver extends BaseStep {
             new SimpleStep(game, () => this.waitForCostResolution()),
             new SimpleStep(game, () => this.payCosts()),
             new SimpleStep(game, () => this.context.resolutionStage = 'effect'),
-            new SimpleStep(game, () => this.chooseOpponents()),
+            new SimpleStep(game, () => this.choosePlayer()),
+            new SimpleStep(game, () => this.waitForChoosePlayerResolution()),
             new SimpleStep(game, () => this.resolveTargets()),
             new SimpleStep(game, () => this.waitForTargetResolution()),
             new SimpleStep(game, () => this.incrementAbilityLimit()),
@@ -44,8 +43,8 @@ class AbilityResolver extends BaseStep {
         return this.pipeline.handleCardClicked(player, card);
     }
 
-    onMenuCommand(player, arg, method) {
-        return this.pipeline.handleMenuCommand(player, arg, method);
+    onMenuCommand(player, arg, method, promptId) {
+        return this.pipeline.handleMenuCommand(player, arg, method, promptId);
     }
 
     cancelStep() {
@@ -69,7 +68,7 @@ class AbilityResolver extends BaseStep {
     }
 
     createSnapshot() {
-        if(this.context.source.getType() === 'character' || this.context.source.getType() === 'location' || this.context.source.getType() === 'attachment') {
+        if(['attachment', 'character', 'event', 'location'].includes(this.context.source.getType())) {
             this.context.cardStateWhenInitiated = this.context.source.createSnapshot();
         }
     }
@@ -85,13 +84,21 @@ class AbilityResolver extends BaseStep {
     }
 
     resolveCosts() {
+        if(this.cancelled) {
+            return;
+        }
+
         this.canPayResults = this.ability.resolveCosts(this.context);
     }
 
     waitForCostResolution() {
-        this.cancelled = _.any(this.canPayResults, result => result.resolved && !result.value);
+        if(this.cancelled) {
+            return;
+        }
 
-        if(!_.all(this.canPayResults, result => result.resolved)) {
+        this.cancelled = this.canPayResults.some(result => result.resolved && !result.value);
+
+        if(!this.canPayResults.every(result => result.resolved)) {
             return false;
         }
     }
@@ -104,21 +111,28 @@ class AbilityResolver extends BaseStep {
         this.ability.payCosts(this.context);
     }
 
-    chooseOpponents() {
-        if(this.cancelled || !this.ability.needsChooseOpponent()) {
+    choosePlayer() {
+        if(this.cancelled || !this.ability.needsChoosePlayer()) {
             return;
         }
 
-        this.game.promptForOpponentChoice(this.context.player, {
-            condition: opponent => this.ability.canChooseOpponent(opponent),
-            onSelect: opponent => {
-                this.context.opponent = opponent;
-            },
-            onCancel: () => {
-                this.cancelled = true;
-            },
-            source: this.context.source
-        });
+        this.playerResult = this.ability.resolvePlayer(this.context);
+    }
+
+    waitForChoosePlayerResolution() {
+        if(this.cancelled || !this.playerResult) {
+            return;
+        }
+
+        if(!this.playerResult.resolved) {
+            return false;
+        }
+
+        if(this.playerResult.cancelled) {
+            this.cancelled = true;
+            this.game.addAlert('danger', '{0} cancels the resolution of {1} (costs were still paid)', this.context.player, this.context.source);
+            return;
+        }
     }
 
     resolveTargets() {
@@ -134,7 +148,7 @@ class AbilityResolver extends BaseStep {
             return;
         }
 
-        let cancelledTargeting = this.targetResults.some(result => result.resolved && !result.value);
+        let cancelledTargeting = this.targetResults.some(result => result.cancelled);
         if(cancelledTargeting) {
             this.cancelled = true;
             this.game.addAlert('danger', '{0} cancels the resolution of {1} (costs were still paid)', this.context.player, this.context.source);
@@ -172,6 +186,8 @@ class AbilityResolver extends BaseStep {
             return;
         }
 
+        this.ability.outputMessage(this.context);
+
         // Check to make sure the ability is actually a card ability. For
         // instance, marshaling does not count as initiating a card ability and
         // thus is not subject to cancels such as Treachery.
@@ -197,7 +213,7 @@ class AbilityResolver extends BaseStep {
                 this.context.source.owner.moveCard(this.context.source, this.context.source.eventPlacementLocation);
             }
 
-            let event = new Event('onCardPlayed', { player: this.context.player, card: this.context.source });
+            let event = new Event('onCardPlayed', { player: this.context.player, card: this.context.source, originalLocation: this.context.originalLocation });
             if(this.needsOutOfShadowEvent) {
                 event.addChildEvent(new Event('onCardOutOfShadows', { player: this.context.player, card: this.context.source, type: 'card' }));
             }

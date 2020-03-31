@@ -1,6 +1,20 @@
 {
   "extends": "eslint:recommended",
   "rules": {
+    "arrow-spacing": [
+      "error",
+      {
+        "before": true,
+        "after": true
+      }
+    ],
+    "comma-spacing": [
+      "error",
+      {
+        "before": false,
+        "after": true
+      }
+    ],
     "indent": [
       2,
       4,
@@ -80,7 +94,8 @@
       2
     ],
     "no-multiple-empty-lines": [
-      2, {
+      2,
+      {
         "max": 1
       }
     ],
@@ -110,6 +125,18 @@
             "after": false
           }
         }
+      }
+    ],
+    "padded-blocks": [
+      "error",
+      "never"
+    ],
+    "padding-line-between-statements": [
+      "error",
+      {
+        "blankLine": "always",
+        "prev": "*",
+        "next": "cjs-export"
       }
     ]
   },

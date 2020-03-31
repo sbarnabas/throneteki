@@ -23,7 +23,7 @@ describe('ActionWindow', function() {
     });
 
     describe('onMenuCommand()', function() {
-        describe('when it is the current player',function() {
+        describe('when it is the current player', function() {
             beforeEach(function() {
                 this.prompt.onMenuCommand(this.player2);
             });
@@ -33,7 +33,7 @@ describe('ActionWindow', function() {
             });
         });
 
-        describe('when it is not the current player',function() {
+        describe('when it is not the current player', function() {
             beforeEach(function() {
                 this.prompt.onMenuCommand(this.player1);
             });
@@ -51,7 +51,7 @@ describe('ActionWindow', function() {
                 this.prompt.onMenuCommand(this.player2);
 
                 // Player 1 takes an action
-                this.prompt.markActionAsTaken();
+                this.prompt.markActionAsTaken(this.player1);
             });
 
             it('should rotate the current player', function() {
@@ -70,6 +70,20 @@ describe('ActionWindow', function() {
                 this.prompt.onMenuCommand(this.player1);
 
                 expect(this.prompt.isComplete()).toBe(true);
+            });
+        });
+
+        describe('when someone other than the current player takes an action', function() {
+            beforeEach(function() {
+                // Player 2 is first player, so player 1 takes their action out
+                // of turn.
+                this.prompt.markActionAsTaken(this.player1);
+            });
+
+            it('should rotate the current player', function() {
+                // Since player 1 took their action out of turn, player 2 should
+                // be prompted again for their action.
+                expect(this.prompt.currentPlayer).toBe(this.player2);
             });
         });
     });
@@ -92,6 +106,34 @@ describe('ActionWindow', function() {
             });
 
             it('should return true', function() {
+                expect(this.prompt.continue()).toBe(true);
+            });
+        });
+
+        describe('when only the second player has the window enabled', function() {
+            beforeEach(function() {
+                this.player1.promptedActionWindows['test'] = true;
+                this.player2.promptedActionWindows['test'] = false;
+            });
+
+            it('should prompt the first player even though the window is off', function() {
+                this.prompt.continue();
+
+                expect(this.prompt.currentPlayer).toBe(this.player2);
+            });
+
+            it('should not complete the prompt', function() {
+                expect(this.prompt.continue()).toBe(false);
+            });
+        });
+
+        describe('when both players have the window disabled', function() {
+            beforeEach(function() {
+                this.player1.promptedActionWindows['test'] = false;
+                this.player2.promptedActionWindows['test'] = false;
+            });
+
+            it('should complete the prompt', function() {
                 expect(this.prompt.continue()).toBe(true);
             });
         });

@@ -1,46 +1,24 @@
-const _ = require('underscore');
-
 const DrawCard = require('../../drawcard.js');
 
 class TheBearAndTheMaidenFair extends DrawCard {
     setupCardAbilities() {
         this.action({
             title: 'Look at top 5 cards of a deck',
-            handler: () => {
-                let buttons = _.map(this.game.getPlayers(), player => ({
-                    text: player.name, arg: player.name, method: 'selectPlayer'
-                }));
+            choosePlayer: true,
+            message: '{player} plays {source} to look at the top 5 cards of {chosenPlayer}\'s deck',
+            handler: context => {
+                this.selectedPlayer = context.chosenPlayer;
+                this.remainingCards = this.selectedPlayer.searchDrawDeck(5);
+                this.cardsPlaced = 0;
+                this.mode = 'bottom';
 
-                this.game.promptWithMenu(this.controller, this, {
-                    activePrompt: {
-                        menuTitle: 'Choose a player',
-                        buttons: buttons
-                    },
-                    source: this
-                });
+                this.promptToPlaceNextCard();
             }
         });
     }
 
-    selectPlayer(player, playerName) {
-        this.selectedPlayer = this.game.getPlayerByName(playerName);
-
-        if(!this.selectedPlayer) {
-            return false;
-        }
-
-        this.game.addMessage('{0} plays {1} to look at the top 5 cards of {2}\'s deck', player, this, this.selectedPlayer);
-
-        this.remainingCards = this.selectedPlayer.searchDrawDeck(5);
-        this.cardsPlaced = 0;
-        this.mode = 'bottom';
-        this.promptToPlaceNextCard();
-
-        return true;
-    }
-
     promptToPlaceNextCard() {
-        let buttons = _.map(this.remainingCards, card => ({
+        let buttons = this.remainingCards.map(card => ({
             method: 'selectCard', card: card
         }));
 
@@ -58,13 +36,13 @@ class TheBearAndTheMaidenFair extends DrawCard {
     }
 
     selectCard(player, cardId) {
-        let card = _.find(this.remainingCards, card => card.uuid === cardId);
+        let card = this.remainingCards.find(card => card.uuid === cardId);
 
         if(!card) {
             return false;
         }
 
-        this.remainingCards = _.reject(this.remainingCards, card => card.uuid === cardId);
+        this.remainingCards = this.remainingCards.filter(card => card.uuid !== cardId);
         this.selectedPlayer.moveCard(card, 'draw deck', { bottom: this.mode === 'bottom' });
         this.cardsPlaced += 1;
 

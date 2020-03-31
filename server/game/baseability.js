@@ -1,6 +1,10 @@
-const _ = require('underscore');
+const {flatMap} = require('../Array');
 
+const AbilityChoosePlayerDefinition = require('./AbilityChoosePlayerDefinition');
+const AbilityMessage = require('./AbilityMessage');
 const AbilityTarget = require('./AbilityTarget.js');
+const ChooseGameAction = require('./GameActions/ChooseGameAction');
+const HandlerGameActionWrapper = require('./GameActions/HandlerGameActionWrapper');
 
 /**
  * Base class representing an ability that can be done by the player. This
@@ -24,10 +28,12 @@ class BaseAbility {
     constructor(properties) {
         this.cost = this.buildCost(properties.cost);
         this.targets = this.buildTargets(properties);
+        this.choosePlayerDefinition = AbilityChoosePlayerDefinition.create(properties);
         this.limit = properties.limit;
+        this.message = AbilityMessage.create(properties.message);
         this.cannotBeCanceled = !!properties.cannotBeCanceled;
-        this.chooseOpponentFunc = properties.chooseOpponent;
         this.abilitySourceType = properties.abilitySourceType || 'card';
+        this.gameAction = this.buildGameAction(properties);
     }
 
     buildCost(cost) {
@@ -35,7 +41,7 @@ class BaseAbility {
             return [];
         }
 
-        if(!_.isArray(cost)) {
+        if(!Array.isArray(cost)) {
             return [cost];
         }
 
@@ -44,15 +50,49 @@ class BaseAbility {
 
     buildTargets(properties) {
         if(properties.target) {
-            return [new AbilityTarget('target', properties.target)];
+            return [AbilityTarget.create('target', properties.target)];
         }
 
         if(properties.targets) {
             let targetPairs = Object.entries(properties.targets);
-            return targetPairs.map(([name, properties]) => new AbilityTarget(name, properties));
+            return targetPairs.map(([name, properties]) => AbilityTarget.create(name, properties));
         }
 
         return [];
+    }
+
+    buildGameAction(properties) {
+        if(properties.gameAction) {
+            if(properties.target || properties.targets || properties.chooseOpponent || properties.choosePlayer) {
+                throw new Error('Cannot use gameAction with abilities with choices');
+            }
+
+            return properties.gameAction;
+        }
+
+        if(properties.choices) {
+            return new ChooseGameAction(properties.choices);
+        }
+
+        if(properties.handler) {
+            return new HandlerGameActionWrapper({ handler: properties.handler });
+        }
+
+        return null;
+    }
+
+    canResolve(context) {
+        return (
+            this.meetsRequirements(context) &&
+            this.canResolvePlayer(context) &&
+            this.canPayCosts(context) &&
+            this.canResolveTargets(context) &&
+            this.gameAction.allow(context)
+        );
+    }
+
+    meetsRequirements() {
+        return true;
     }
 
     /**
@@ -61,7 +101,7 @@ class BaseAbility {
      * @returns {Boolean}
      */
     canPayCosts(context) {
-        return this.executeWithTemporaryContext(context, 'cost', () => _.all(this.cost, cost => cost.canPay(context)));
+        return this.executeWithTemporaryContext(context, 'cost', () => this.cost.every(cost => cost.canPay(context)));
     }
 
     /**
@@ -99,7 +139,7 @@ class BaseAbility {
      * @returns {Array} An array of cost resolution results.
      */
     resolveCosts(context) {
-        return _.map(this.cost, cost => {
+        return this.cost.map(cost => {
             if(cost.resolve) {
                 return cost.resolve(context);
             }
@@ -112,9 +152,9 @@ class BaseAbility {
      * Pays all costs for the ability simultaneously.
      */
     payCosts(context) {
-        _.each(this.cost, cost => {
+        for(let cost of this.cost) {
             cost.pay(context);
-        });
+        }
     }
 
     /**
@@ -124,48 +164,46 @@ class BaseAbility {
      * @returns {boolean}
      */
     canUnpayCosts(context) {
-        return _.all(this.cost, cost => cost.unpay && cost.canUnpay(context));
+        return this.cost.every(cost => cost.unpay && cost.canUnpay(context));
     }
 
     /**
      * Unpays each cost associated with the ability.
      */
     unpayCosts(context) {
-        _.each(this.cost, cost => {
+        for(let cost of this.cost) {
             cost.unpay(context);
-        });
+        }
     }
 
     /**
-     * Returns whether the ability requires an opponent to be chosen.
+     * Returns whether the ability requires a player to be chosen.
      */
-    needsChooseOpponent() {
-        return !!this.chooseOpponentFunc;
+    needsChoosePlayer() {
+        return !!this.choosePlayerDefinition;
     }
 
     /**
-     * Returns whether there are opponents that can be chosen, if the ability
-     * requires that an opponent be chosen.
+     * Returns whether there are players that can be chosen, if the ability
+     * requires that a player be chosen.
      */
-    canResolveOpponents(context) {
-        if(!this.needsChooseOpponent()) {
+    canResolvePlayer(context) {
+        if(!this.needsChoosePlayer()) {
             return true;
         }
 
-        return _.any(context.game.getPlayers(), player => {
-            return player !== context.player && this.canChooseOpponent(player);
-        });
+        return this.choosePlayerDefinition.canResolve(context);
     }
 
     /**
-     * Returns whether a specific player can be chosen as an opponent.
+     * Prompts the current player to choose a player
      */
-    canChooseOpponent(opponent) {
-        if(_.isFunction(this.chooseOpponentFunc)) {
-            return this.chooseOpponentFunc(opponent);
+    resolvePlayer(context) {
+        if(!this.needsChoosePlayer()) {
+            return;
         }
 
-        return this.chooseOpponentFunc === true;
+        return this.choosePlayerDefinition.resolve(context);
     }
 
     /**
@@ -183,7 +221,7 @@ class BaseAbility {
      * @returns {Array} An array of target resolution objects.
      */
     resolveTargets(context) {
-        return this.targets.map(target => target.resolve(context));
+        return flatMap(this.targets, target => target.resolve(context));
     }
 
     /**
@@ -195,13 +233,17 @@ class BaseAbility {
         }
     }
 
+    outputMessage(context) {
+        this.message.output(context.game, context);
+    }
+
     /**
      * Executes the ability once all costs have been paid. Inheriting classes
      * should override this method to implement their behavior; by default it
      * does nothing.
      */
-    executeHandler() {
-        throw new Error('Abstract method executeHandler must be overridden');
+    executeHandler(context) {
+        context.game.resolveGameAction(this.gameAction, context);
     }
 
     isAction() {

@@ -1,5 +1,3 @@
-const _ = require('underscore');
-
 const DrawCard = require('../../drawcard.js');
 
 class TywinsStratagem extends DrawCard {
@@ -13,7 +11,9 @@ class TywinsStratagem extends DrawCard {
                 gameAction: 'returnToHand'
             },
             handler: context => {
-                _.each(context.target, card => card.owner.returnCardToHand(card));
+                for(let card of context.target) {
+                    card.owner.returnCardToHand(card);
+                }
                 this.game.addMessage('{0} plays {1} to return {2} to its owner\'s hands',
                     this.controller, this, context.target);
             }
@@ -22,9 +22,9 @@ class TywinsStratagem extends DrawCard {
         this.reaction({
             location: 'discard pile',
             when: {
-                onCardsDiscarded: event => this.controller !== event.player &&
-                                           ['hand', 'draw deck'].includes(event.originalLocation) &&
-                                           _.any(event.cards, card => card.getType() === 'character')
+                onCardDiscarded: event => this.controller !== event.cardStateWhenDiscarded.controller &&
+                                          ['hand', 'draw deck'].includes(event.cardStateWhenDiscarded.location) &&
+                                          event.card.getType() === 'character'
             },
             ignoreEventCosts: true,
             cost: ability.costs.payGold(1),

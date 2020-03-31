@@ -6,7 +6,7 @@ const http = require('http');
 const https = require('https');
 const fs = require('fs');
 
-const config = require('./nodeconfig.js');
+const config = require('config');
 const { detectBinary } = require('../util');
 const logger = require('../log.js');
 const ZmqSocket = require('./zmqsocket.js');
@@ -15,7 +15,7 @@ const Socket = require('../socket.js');
 const version = require('../../version.js');
 
 if(config.sentryDsn) {
-    Raven.config(config.sentryDsn, { release: version }).install();
+    Raven.config(config.sentryDsn, { release: version.build }).install();
 }
 
 class GameServer {
@@ -33,7 +33,7 @@ class GameServer {
 
         this.host = process.env.HOST || config.host;
 
-        this.zmqSocket = new ZmqSocket(this.host, this.protocol, version);
+        this.zmqSocket = new ZmqSocket(this.host, this.protocol, version.build);
         this.zmqSocket.on('onStartGame', this.onStartGame.bind(this));
         this.zmqSocket.on('onSpectator', this.onSpectator.bind(this));
         this.zmqSocket.on('onGameSync', this.onGameSync.bind(this));
@@ -69,7 +69,7 @@ class GameServer {
 
         this.io.on('connection', this.onConnection.bind(this));
 
-        setInterval(() => this.clearStaleFinishedGames(), 60 * 1000);
+        setInterval(() => this.clearStaleAndFinishedGames(), 30 * 1000);
     }
 
     debugDump() {
@@ -78,7 +78,7 @@ class GameServer {
                 return {
                     name: player.name,
                     left: player.left,
-                    disconnected: player.disconnected,
+                    disconnected: !!player.disconnectedAt,
                     id: player.id,
                     spectator: player.isSpectator()
                 };
@@ -111,7 +111,7 @@ class GameServer {
             debugData.game = gameState;
             debugData.game.players = undefined;
 
-            debugData.messages = game.messages;
+            debugData.messages = game.getPlainTextLog();
             debugData.game.messages = undefined;
 
             _.each(game.getPlayers(), player => {
@@ -126,22 +126,31 @@ class GameServer {
         }
     }
 
-    clearStaleFinishedGames() {
+    closeGame(game) {
+        for(let player of Object.values(game.getPlayersAndSpectators())) {
+            if(player.socket) {
+                player.socket.tIsClosing = true;
+                player.socket.disconnect();
+            }
+        }
+
+        delete this.games[game.id];
+        this.zmqSocket.send('GAMECLOSED', { game: game.id });
+    }
+
+    clearStaleAndFinishedGames() {
         const timeout = 20 * 60 * 1000;
 
-        let staleGames = _.filter(this.games, game => game.finishedAt && (Date.now() - game.finishedAt > timeout));
-
+        let staleGames = Object.values(this.games).filter(game => game.finishedAt && (Date.now() - game.finishedAt > timeout));
         for(let game of staleGames) {
             logger.info('closed finished game', game.id, 'due to inactivity');
-            for(let player of Object.values(game.getPlayersAndSpectators())) {
-                if(player.socket) {
-                    player.socket.tIsClosing = true;
-                    player.socket.disconnect();
-                }
-            }
+            this.closeGame(game);
+        }
 
-            delete this.games[game.id];
-            this.zmqSocket.send('GAMECLOSED', { game: game.id });
+        let emptyGames = Object.values(this.games).filter(game => game.isEmpty());
+        for(let game of emptyGames) {
+            logger.info('closed empty game', game.id);
+            this.closeGame(game);
         }
     }
 
@@ -169,7 +178,7 @@ class GameServer {
 
     sendGameState(game) {
         _.each(game.getPlayersAndSpectators(), player => {
-            if(player.left || player.disconnected || !player.socket) {
+            if(player.left || player.disconnectedAt || !player.socket) {
                 return;
             }
 
@@ -195,16 +204,38 @@ class GameServer {
         this.zmqSocket.send('GAMEWIN', { game: game.getSaveState(), winner: winner.name, reason: reason });
     }
 
+    rematch(game) {
+        this.zmqSocket.send('REMATCH', { game: game.getSaveState() });
+
+        for(let player of Object.values(game.getPlayersAndSpectators())) {
+            if(player.left || player.disconnected || !player.socket) {
+                continue;
+            }
+
+            player.socket.send('cleargamestate');
+            player.socket.leaveChannel(game.id);
+            player.left = true; // So they don't get game state sent after the /rematch command is issued
+        }
+
+        delete this.games[game.id];
+    }
+
     onStartGame(pendingGame) {
         let game = new Game(pendingGame, { router: this, titleCardData: this.titleCardData, cardData: this.cardData, packData: this.packData, restrictedListData: this.restrictedListData });
+        game.on('onTimeExpired', () => {
+            this.sendGameState(game);
+        });
         this.games[pendingGame.id] = game;
 
         game.started = true;
-        _.each(pendingGame.players, player => {
+        for(let player of Object.values(pendingGame.players)) {
             game.selectDeck(player.name, player.deck);
-        });
+        }
 
         game.initialise();
+        if(pendingGame.rematch) {
+            game.addAlert('info', 'The rematch is ready');
+        }
     }
 
     onSpectator(pendingGame, user) {
@@ -249,9 +280,14 @@ class GameServer {
     }
 
     onCloseGame(gameId) {
-        var game = this.games[gameId];
+        let game = this.games[gameId];
         if(!game) {
             return;
+        }
+
+        for(let player of Object.values(game.getPlayersAndSpectators())) {
+            player.socket.send('cleargamestate');
+            player.socket.leaveChannel(game.id);
         }
 
         delete this.games[gameId];
@@ -289,7 +325,7 @@ class GameServer {
         player.lobbyId = player.id;
         player.id = socket.id;
         player.connectionSucceeded = true;
-        if(player.disconnected) {
+        if(player.disconnectedAt) {
             logger.info('user \'%s\' reconnected to game', socket.user.username);
             game.reconnect(socket, player.name);
         }
@@ -298,7 +334,7 @@ class GameServer {
 
         player.socket = socket;
 
-        if(!player.isSpectator()) {
+        if(!player.isSpectator(player) && !player.disconnectedAt) {
             game.addMessage('{0} has connected to the game server', player);
         }
 
@@ -309,7 +345,7 @@ class GameServer {
     }
 
     onSocketDisconnected(socket, reason) {
-        var game = this.findGameForUser(socket.user.username);
+        let game = this.findGameForUser(socket.user.username);
         if(!game) {
             return;
         }
@@ -317,6 +353,10 @@ class GameServer {
         logger.info('user \'%s\' disconnected from a game: %s', socket.user.username, reason);
 
         let player = game.playersAndSpectators[socket.user.username];
+        if(player.id !== socket.id) {
+            return;
+        }
+
         let isSpectator = player && player.isSpectator();
 
         game.disconnect(socket.user.username);

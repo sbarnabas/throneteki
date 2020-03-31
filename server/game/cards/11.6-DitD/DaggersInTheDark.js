@@ -1,4 +1,5 @@
-const DrawCard = require('../../drawcard.js');
+const DrawCard = require('../../drawcard');
+const GameActions = require('../../GameActions');
 
 class DaggersInTheDark extends DrawCard {
     setupCardAbilities() {
@@ -7,7 +8,7 @@ class DaggersInTheDark extends DrawCard {
                 afterChallenge: event => event.challenge.winner === this.controller && event.challenge.defendingPlayer === this.controller
             },
             target: {
-                cardCondition: card => card.location === 'play area' && card.getType() === 'character' && card.controller === this.game.currentChallenge.loser,
+                cardCondition: card => card.location === 'play area' && card.getType() === 'character' && card.controller === this.game.currentChallenge.loser && card.isAttacking(),
                 gameAction: 'kill'
             },
             handler: context => {
@@ -43,9 +44,11 @@ class DaggersInTheDark extends DrawCard {
     }
 
     onCardsSelected(player, cards, target) {
-        for(let card of cards) {
-            player.sacrificeCard(card);
-        }
+        this.game.resolveGameAction(
+            GameActions.simultaneously(
+                cards.map(card => GameActions.sacrificeCard({ card }))
+            )
+        );
 
         this.game.addMessage('{0} plays {1} to kill {2}, but the effect is cancelled by {3} sacrificing {4}',
             this.controller, this, target, player, cards);

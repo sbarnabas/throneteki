@@ -1,6 +1,5 @@
-const _ = require('underscore');
-
-const PlotCard = require('../../plotcard.js');
+const PlotCard = require('../../plotcard');
+const GameActions = require('../../GameActions');
 
 class UnexpectedDelay extends PlotCard {
     setupCardAbilities() {
@@ -8,45 +7,29 @@ class UnexpectedDelay extends PlotCard {
             when: {
                 onPhaseStarted: event => event.phase === 'challenge'
             },
-            handler: () => {
-                this.remainingPlayers = this.game.getPlayersInFirstPlayerOrder();
-                this.selections = [];
-                this.proceedToNextStep();
+            target: {
+                choosingPlayer: 'each',
+                cardCondition: card => card.location === 'play area' && card.getType() === 'character' && card.power === 0 && card.attachments.length === 0
+            },
+            message: {
+                format: '{source} forces {chosenCards} to return to their owner\'s hands',
+                args: { chosenCards: context => this.getChosenCards(context) }
+            },
+            handler: context => {
+                const uniqueCards = this.getChosenCards(context);
+                this.game.resolveGameAction(
+                    GameActions.simultaneously(
+                        uniqueCards.map(card => GameActions.returnCardToHand({ card }))
+                    ),
+                    context
+                );
             }
         });
     }
 
-    cancelSelection(player) {
-        this.game.addAlert('danger', '{0} cancels the resolution of {1}', player, this);
-        this.proceedToNextStep();
-    }
-
-    onCardSelected(player, card) {
-        this.selections.push({ player: player, card: card });
-        this.game.addMessage('{0} selects {1} for {2}', player, card, this);
-        this.proceedToNextStep();
-
-        return true;
-    }
-
-    doReturn() {
-        _.each(this.selections, selection => {
-            selection.card.owner.returnCardToHand(selection.card);
-        });
-    }
-
-    proceedToNextStep() {
-        if(this.remainingPlayers.length > 0) {
-            let currentPlayer = this.remainingPlayers.shift();
-            this.game.promptForSelect(currentPlayer, {
-                source: this,
-                cardCondition: card => card.location === 'play area' && card.getType() === 'character' && card.power === 0 && card.attachments.length === 0,
-                onSelect: (player, cards) => this.onCardSelected(player, cards),
-                onCancel: (player) => this.cancelSelection(player)
-            });
-        } else {
-            this.doReturn();
-        }
+    getChosenCards(context) {
+        const cards = context.targets.selections.map(selection => selection.value);
+        return [...new Set(cards)];
     }
 }
 

@@ -1,12 +1,10 @@
-const _ = require('underscore');
-
 const PlotCard = require('../../plotcard.js');
 
 class CommonCause extends PlotCard {
     setupCardAbilities(ability) {
         this.persistentEffect({
             match: this,
-            effect: ability.effects.dynamicClaim(() => this.getNumberOfFactions())
+            effect: ability.effects.modifyClaim(() => this.getNumberOfFactions())
         });
     }
 
@@ -14,14 +12,14 @@ class CommonCause extends PlotCard {
         let charactersInPlay = this.controller.filterCardsInPlay(card => card.getType() === 'character' && !card.isFaction('neutral'));
         let factionsInPlay = [];
 
-        _.each(charactersInPlay, card => {
+        for(let card of charactersInPlay) {
             let factions = card.getFactions();
-            _.each(factions, faction => {
+            for(let faction of factions) {
                 if(!factionsInPlay.includes(faction)) {
                     factionsInPlay.push(faction);
                 }
-            });
-        });
+            }
+        }
 
         return factionsInPlay.length;
     }

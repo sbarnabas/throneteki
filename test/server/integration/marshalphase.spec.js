@@ -106,12 +106,14 @@ describe('marshal phase', function() {
                 expect(this.arbor1.location).toBe('hand');
             });
 
-            it('should not allow duplicates of a single limited location to be placed', function() {
+            it('should allow duplicates of limited cards to be placed', function() {
+                // FAQ v2.1 now allows duplicates to ignore the Limited keyword.
                 this.player1.clickCard(this.arbor1);
                 this.player1.clickCard(this.arbor2);
 
                 expect(this.arbor1.location).toBe('play area');
-                expect(this.arbor2.location).toBe('hand');
+                expect(this.arbor2.location).toBe('duplicate');
+                expect(this.arbor1.dupes).toContain(this.arbor2);
             });
         });
 
@@ -154,7 +156,7 @@ describe('marshal phase', function() {
             beforeEach(function() {
                 const deck = this.buildDeck('targaryen', [
                     'Trading with the Pentoshi',
-                    'Crown of Gold', 'Crown of Gold', 'Khal Drogo'
+                    'Crown of Gold', 'Crown of Gold', 'Khal Drogo (Core)'
                 ]);
                 this.player1.selectDeck(deck);
                 this.player2.selectDeck(deck);
@@ -204,6 +206,32 @@ describe('marshal phase', function() {
 
                     expect(this.player1Character.getStrength()).toBe(1);
                 });
+            });
+        });
+
+        describe('when it is not your turn to marshal', function() {
+            beforeEach(function() {
+                const deck = this.buildDeck('stark', [
+                    'Trading with the Pentoshi', 'Sneak Attack',
+                    'The Roseroad'
+                ]);
+                this.player1.selectDeck(deck);
+                this.player2.selectDeck(deck);
+                this.startGame();
+                this.skipSetupPhase();
+                this.player1.selectPlot('Trading with the Pentoshi');
+                this.player2.selectPlot('Sneak Attack');
+                this.selectFirstPlayer(this.player1);
+            });
+
+            it('should not allow you to marshal cards', function() {
+                let card = this.player2.findCardByName('The Roseroad', 'hand');
+                this.player2.clickCard(card);
+
+                // Even if player 2 has enough gold to marshal the card, since
+                // it is player 1's turn, it should not allow the card to be
+                // marshalled.
+                expect(card.location).not.toBe('play area');
             });
         });
     });

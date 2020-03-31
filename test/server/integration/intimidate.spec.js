@@ -3,7 +3,7 @@ describe('intimidate', function() {
         beforeEach(function() {
             const deck = this.buildDeck('baratheon', [
                 'Trading with the Pentoshi',
-                'Robert Baratheon', 'Dragonstone Faithful', 'Bastard in Hiding', 'Maester Cressen', 'Gendry', 'Grey Wind'
+                'Robert Baratheon (Core)', 'Dragonstone Faithful', 'Bastard in Hiding', 'Maester Cressen', 'Gendry', 'Grey Wind'
             ]);
             this.player1.selectDeck(deck);
             this.player2.selectDeck(deck);
@@ -93,6 +93,7 @@ describe('intimidate', function() {
                 this.player1.clickCard(this.gendry);
                 expect(this.gendry.kneeled).toBe(true);
 
+                expect(this.player1).not.toHavePrompt('Select a character to intimidate');
                 expect(this.player1).not.toHavePrompt('Choose and kneel a character with 10 strength or less');
             });
         });

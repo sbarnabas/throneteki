@@ -27,11 +27,11 @@ describe('ForcedTriggeredAbilityWindow', function() {
         }
 
         function createAbility(card, context) {
-            let ability = jasmine.createSpyObj('ability', ['createContext', 'getChoices', 'meetsRequirements']);
+            let ability = jasmine.createSpyObj('ability', ['createContext', 'getChoices', 'canResolve']);
             ability.card = card;
             ability.createContext.and.returnValue(context);
             ability.getChoices.and.returnValue([{ choice: 'default' }]);
-            ability.meetsRequirements.and.returnValue(true);
+            ability.canResolve.and.returnValue(true);
             return ability;
         }
 
@@ -49,7 +49,6 @@ describe('ForcedTriggeredAbilityWindow', function() {
 
         spyOn(this.window, 'gatherChoices');
         spyOn(this.window, 'resolveAbility');
-
     });
 
     describe('continue()', function() {

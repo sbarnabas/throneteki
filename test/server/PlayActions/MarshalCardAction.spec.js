@@ -6,7 +6,7 @@ describe('MarshalCardAction', function () {
         this.gameSpy.raiseEvent.and.callFake(function(name, params, handler) {
             handler();
         });
-        this.playerSpy = jasmine.createSpyObj('player', ['canPutIntoPlay', 'isCardInPlayableLocation', 'putIntoPlay']);
+        this.playerSpy = jasmine.createSpyObj('player', ['canDuplicate', 'canPutIntoPlay', 'isCardInPlayableLocation', 'putIntoPlay']);
         this.cardSpy = jasmine.createSpyObj('card', ['getType']);
         this.cardSpy.controller = this.playerSpy;
         this.cardSpy.owner = this.playerSpy;
@@ -22,6 +22,8 @@ describe('MarshalCardAction', function () {
     describe('meetsRequirements()', function() {
         beforeEach(function() {
             this.gameSpy.currentPhase = 'marshal';
+            this.playerSpy.allowMarshal = true;
+            this.playerSpy.canDuplicate.and.returnValue(false);
             this.playerSpy.canPutIntoPlay.and.returnValue(true);
             this.playerSpy.isCardInPlayableLocation.and.returnValue(true);
             this.cardSpy.getType.and.returnValue('character');

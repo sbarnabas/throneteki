@@ -1,4 +1,4 @@
-const _ = require('underscore');
+const CardMatcher = require('../CardMatcher');
 
 /**
  * Base class that represents card selection requirements and the behaviours of
@@ -22,11 +22,12 @@ class BaseCardSelector {
      * check for card immunity
      */
     constructor(properties) {
-        this.cardCondition = properties.cardCondition;
+        this.cardCondition = CardMatcher.createMatcher(properties.cardCondition);
         this.cardType = properties.cardType;
         this.gameAction = properties.gameAction;
         this.singleController = properties.singleController;
         this.isCardEffect = properties.isCardEffect;
+        this.optional = !!properties.optional;
 
         if(!Array.isArray(properties.cardType)) {
             this.cardType = [properties.cardType];
@@ -75,7 +76,7 @@ class BaseCardSelector {
      * @returns {boolean}
      */
     hasEnoughSelected(selectedCards) {
-        return selectedCards.length > 0;
+        return this.optional || selectedCards.length > 0;
     }
 
     /**
@@ -85,7 +86,7 @@ class BaseCardSelector {
      * @returns {boolean}
      */
     hasEnoughTargets(context) {
-        return context.game.allCards.some(card => this.canTarget(card, context));
+        return this.optional || context.game.allCards.some(card => this.canTarget(card, context));
     }
 
     /**
@@ -148,7 +149,7 @@ class BaseCardSelector {
      * @returns {boolean}
      */
     checkForSingleController(selectedCards, card) {
-        if(!this.singleController || _.isEmpty(selectedCards)) {
+        if(!this.singleController || (selectedCards || []).length === 0) {
             return true;
         }
 

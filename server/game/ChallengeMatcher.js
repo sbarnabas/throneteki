@@ -11,6 +11,8 @@ class ChallengeMatcher {
             Matcher.anyValue(matchers.attackingAlone, card => card.isAttacking() && challenge.attackers.length === 1) &&
             Matcher.anyValue(matchers.defendingAlone, card => card.isDefending() && challenge.defenders.length === 1) &&
             Matcher.containsValue(matchers.number, challenge.number) &&
+            Matcher.containsValue(matchers.unopposed, challenge.isUnopposed()) &&
+            Matcher.anyValue(matchers.by5, value => (challenge.strengthDifference >= 5) === value) &&
             Matcher.anyValue(matchers.match, func => func(challenge))
         );
     }
